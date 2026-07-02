@@ -1,0 +1,1453 @@
+<!DOCTYPE html>
+<html lang="id">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+<title>Jurnal Emas Pro — XAUUSD</title>
+<meta name="description" content="Jurnal trading XAUUSD: kalkulator layer, auto-stop harian, berita gold, keuangan pribadi, dan AI coach." />
+<meta name="theme-color" content="#0A0B0F" />
+<link rel="manifest" href="manifest.json" />
+<link rel="icon" href="icon-192.png" />
+<!-- iOS PWA -->
+<meta name="apple-mobile-web-app-capable" content="yes" />
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+<meta name="apple-mobile-web-app-title" content="Jurnal Emas" />
+<link rel="apple-touch-icon" href="icon-192.png" />
+<link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;700&family=JetBrains+Mono:wght@400;600&display=swap" rel="stylesheet" />
+<script src="https://cdnjs.cloudflare.com/ajax/libs/react/18.3.1/umd/react.production.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/react-dom/18.3.1/umd/react-dom.production.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/babel-standalone/7.23.5/babel.min.js"></script>
+<style>
+  html, body { margin: 0; padding: 0; background: #0A0B0F; }
+  * { -webkit-tap-highlight-color: transparent; box-sizing: border-box; }
+  input::placeholder, textarea::placeholder { color: #8A90A0; opacity: .6; }
+  input[type=number]::-webkit-inner-spin-button { -webkit-appearance: none; }
+  button { cursor: pointer; }
+  @keyframes pulse { 0%,100% { opacity: 1 } 50% { opacity: .35 } }
+  @keyframes fadeUp { from { opacity: 0; transform: translateY(8px) } to { opacity: 1; transform: none } }
+  .fadeUp { animation: fadeUp .35s ease both }
+  @media (prefers-reduced-motion: reduce) { * { transition: none !important; animation: none !important; } }
+</style>
+</head>
+<body>
+<div id="root"></div>
+<script>
+  // Service worker untuk PWA (offline shell)
+  if ("serviceWorker" in navigator) {
+    window.addEventListener("load", () => navigator.serviceWorker.register("sw.js").catch(() => {}));
+  }
+  // Shim storage async ala Claude → localStorage
+  window.storage = {
+    async get(k) { const v = localStorage.getItem(k); if (v === null) throw new Error("not found"); return { key: k, value: v }; },
+    async set(k, v) { try { localStorage.setItem(k, v); } catch (e) { throw new Error("quota"); } return { key: k, value: v }; },
+    async delete(k) { localStorage.removeItem(k); return { key: k, deleted: true }; },
+  };
+</script>
+<script type="text/babel" data-presets="react">
+const { useState, useEffect, useMemo, useRef } = React;
+
+// ═══ Konstanta ═══════════════════════════════════════════════
+const CONTRACT_SIZE = 100; // 1 lot XAUUSD = 100 oz → $1 move = $100/lot
+const KEY_META = "xau-meta-v3";
+const KEY_NEWS = "xau-news-v5";
+const KEY_FIN = "xau-finance-v1";
+const KEY_TODO = "xau-todo-v1";
+const KEY_KURS = "xau-kurs-manual";
+const KEY_API = "xau-apikey";
+const NEWS_TTL = 15 * 60 * 1000;
+const tradesKey = (a) => `xau-trades:${a}`;
+const settingsKey = (a) => `xau-settings:${a}`;
+const imgKey = (t) => `xau-img:${t}`;
+
+const C = {
+  ink: "#0A0B0F", panel: "#13151C", panel2: "#1A1D26", line: "#252938",
+  gold: "#E9C25B", gold2: "#F5D98A", goldDim: "#8f7a3a",
+  profit: "#35D399", loss: "#F87171", text: "#EEEFF3", muted: "#8A90A0",
+  blue: "#60A5FA", amber: "#FBBF24",
+};
+
+const SETUPS = ["Breakout", "Pullback", "Reversal", "Range", "News", "Lainnya"];
+const SESSIONS = ["Asia", "London", "New York"];
+const TIMEFRAMES = [
+  { k: "scalp", label: "Scalping" }, { k: "intraday", label: "Intraday" }, { k: "swing", label: "Swing" },
+];
+const DEFAULT_CHECKLIST = [
+  "Searah bias / rencana harian", "SL sudah ditentukan sebelum entry", "Lot sesuai kalkulator risk",
+  "Bukan revenge trade / FOMO", "Tidak ada news besar < 15 menit",
+];
+const DEFAULT_SETTINGS = { dailyTarget: 0, dailyLossLimit: 0, checklistOn: true, checklistItems: DEFAULT_CHECKLIST };
+const FIN_CATS_IN = ["Gaji", "Profit Trading", "Bisnis", "Lainnya"];
+const FIN_CATS_OUT = ["Kebutuhan", "Deposit Trading", "Jajan", "Transport", "Tagihan", "Lainnya"];
+const TODO_CATS = ["Analisa", "Eksekusi", "Review", "Belajar"];
+
+const fmtUsd = (n) => (n < 0 ? "-$" : "$") + Math.abs(n).toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+const fmtIdr = (n) => (n < 0 ? "-Rp " : "Rp ") + Math.abs(Math.round(n)).toLocaleString("id-ID");
+const fmt2 = (n) => n.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+const pad = (n) => String(n).padStart(2, "0");
+const localToday = () => { const d = new Date(); return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`; };
+const thisMonth = () => localToday().slice(0, 7);
+
+function activeSessionWIB() {
+  const h = (new Date().getUTCHours() + 7) % 24;
+  const act = [];
+  if (h >= 7 && h < 16) act.push("Asia");
+  if (h >= 14 && h < 23) act.push("London");
+  if (h >= 19 || h < 4) act.push("New York");
+  return act;
+}
+function nowWIBMinutes() {
+  const d = new Date();
+  return (((d.getUTCHours() + 7) % 24) * 60) + d.getUTCMinutes();
+}
+function minutesToEvent(jamWIB) {
+  if (!jamWIB || !/^\d{1,2}:\d{2}$/.test(jamWIB)) return null;
+  const [h, m] = jamWIB.split(":").map(Number);
+  return h * 60 + m - nowWIBMinutes();
+}
+const impactColor = (d) => (d === "bullish" ? C.profit : d === "bearish" ? C.loss : C.muted);
+
+function compressImage(file) {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => {
+      const img = new Image();
+      img.onload = () => {
+        const scale = Math.min(1, 700 / img.width);
+        const cv = document.createElement("canvas");
+        cv.width = Math.round(img.width * scale);
+        cv.height = Math.round(img.height * scale);
+        cv.getContext("2d").drawImage(img, 0, 0, cv.width, cv.height);
+        resolve(cv.toDataURL("image/jpeg", 0.55));
+      };
+      img.onerror = reject;
+      img.src = reader.result;
+    };
+    reader.onerror = reject;
+    reader.readAsDataURL(file);
+  });
+}
+
+const getApiKey = () => localStorage.getItem(KEY_API) || "";
+
+async function callClaude(messages, useSearch) {
+  const key = getApiKey();
+  if (!key) throw new Error("NO_KEY");
+  const body = { model: "claude-sonnet-4-6", max_tokens: 1000, messages };
+  if (useSearch) body.tools = [{ type: "web_search_20250305", name: "web_search" }];
+  const res = await fetch("https://api.anthropic.com/v1/messages", {
+    method: "POST",
+    headers: {
+      "content-type": "application/json",
+      "x-api-key": key,
+      "anthropic-version": "2023-06-01",
+      "anthropic-dangerous-direct-browser-access": "true",
+    },
+    body: JSON.stringify(body),
+  });
+  const data = await res.json();
+  if (data.error) throw new Error(data.error.message || "API error");
+  return data.content.map((i) => (i.type === "text" ? i.text : "")).filter(Boolean).join("\n");
+}
+
+// Harga gold live gratis (tanpa API key)
+async function fetchGoldPrice() {
+  const res = await fetch("https://api.gold-api.com/price/XAU");
+  const d = await res.json();
+  return d && d.price ? Number(d.price) : null;
+}
+// Kurs USD→IDR gratis
+async function fetchKurs() {
+  const res = await fetch("https://open.er-api.com/v6/latest/USD");
+  const d = await res.json();
+  return d && d.rates && d.rates.IDR ? Number(d.rates.IDR) : null;
+}
+
+// Parser berita format baris (tahan truncation)
+function parseNewsLines(raw) {
+  const out = { harga: null, kurs: null, bias: null, biasAlasan: "", berita: [], kalender: [] };
+  for (const lineRaw of raw.split("\n")) {
+    const line = lineRaw.trim();
+    if (!line || !line.includes("|")) continue;
+    const p = line.split("|").map((s) => s.trim());
+    const tag = p[0].toUpperCase();
+    if (tag === "HARGA" && p[1]) out.harga = p[1].replace(/[^0-9.,]/g, "");
+    else if (tag === "KURS" && p[1]) out.kurs = parseFloat(p[1].replace(/[^0-9.]/g, ""));
+    else if (tag === "BIAS" && p[1]) { out.bias = p[1].toLowerCase(); out.biasAlasan = p[2] || ""; }
+    else if (tag === "NEWS" && p[1]) out.berita.push({ judul: p[1], dampak: (p[2] || "netral").toLowerCase(), ringkasan: p[3] || "" });
+    else if (tag === "EVENT" && p[1]) out.kalender.push({ jamWIB: p[1], dampak: (p[2] || "sedang").toLowerCase(), event: p[3] || "Event ekonomi", catatan: p[4] || "" });
+  }
+  return out.harga || out.bias || out.berita.length ? out : null;
+}
+
+// ═══ Sub-komponen kecil ══════════════════════════════════════
+const Label = ({ children, right }) => (
+  <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 8 }}>
+    <div style={{ fontSize: 11, color: C.muted, letterSpacing: 1.5, textTransform: "uppercase" }}>{children}</div>
+    {right}
+  </div>
+);
+const Card = ({ children, style }) => (
+  <div style={{ background: C.panel, border: `1px solid ${C.line}`, borderRadius: 16, padding: 14, marginBottom: 12, ...style }}>{children}</div>
+);
+const Mono = ({ children, size = 15, color = C.text, weight = 600 }) => (
+  <span style={{ fontFamily: "'JetBrains Mono', monospace", fontSize: size, color, fontWeight: weight }}>{children}</span>
+);
+function GoldBtn({ onClick, children, disabled, small }) {
+  return (
+    <button onClick={onClick} disabled={disabled} style={{
+      width: "100%", padding: small ? "11px 0" : "15px 0", borderRadius: 12, border: "none",
+      background: disabled ? C.panel2 : `linear-gradient(135deg, ${C.gold2}, ${C.gold} 45%, #c9a23e)`,
+      color: disabled ? C.muted : "#1a1508", fontSize: small ? 13.5 : 15, fontWeight: 700, fontFamily: "inherit", letterSpacing: 0.3,
+      boxShadow: disabled ? "none" : "0 4px 18px rgba(233,194,91,.22)",
+    }}>{children}</button>
+  );
+}
+function Chips({ options, value, onChange, colorFn }) {
+  return (
+    <div style={{ display: "flex", flexWrap: "wrap", gap: 7 }}>
+      {options.map((o) => {
+        const key = typeof o === "string" ? o : o.k;
+        const label = typeof o === "string" ? o : o.label;
+        const on = value === key;
+        const col = colorFn ? colorFn(key) : C.gold;
+        return (
+          <button key={key} onClick={() => onChange(key)} style={{
+            padding: "7px 13px", borderRadius: 20, fontSize: 12.5, fontWeight: 600, fontFamily: "inherit",
+            border: `1.5px solid ${on ? col : C.line}`, background: on ? `${col}1A` : "transparent",
+            color: on ? col : C.muted, transition: "all .15s",
+          }}>{label}</button>
+        );
+      })}
+    </div>
+  );
+}
+const SectionTitle = ({ children }) => (
+  <div style={{ display: "flex", alignItems: "center", gap: 10, margin: "18px 0 10px" }}>
+    <div style={{ width: 3, height: 16, borderRadius: 2, background: `linear-gradient(${C.gold2}, ${C.goldDim})` }} />
+    <span style={{ fontSize: 14, fontWeight: 700, letterSpacing: 0.3 }}>{children}</span>
+  </div>
+);
+
+// ═══ App utama ═══════════════════════════════════════════════
+function JurnalGoldPro() {
+  const [accounts, setAccounts] = useState([]);
+  const [activeId, setActiveId] = useState(null);
+  const [trades, setTrades] = useState([]);
+  const [settings, setSettings] = useState(DEFAULT_SETTINGS);
+  const [finance, setFinance] = useState([]);
+  const [todos, setTodos] = useState([]);
+  const [kursManual, setKursManual] = useState(null);
+  const [loaded, setLoaded] = useState(false);
+  const [tab, setTab] = useState("dashboard");
+  const [toast, setToast] = useState(null);
+  const [showAccounts, setShowAccounts] = useState(false);
+  const [viewImg, setViewImg] = useState(null);
+  const [hasKey, setHasKey] = useState(!!getApiKey());
+
+  const [news, setNews] = useState(null);
+  const [newsTs, setNewsTs] = useState(0);
+  const [newsLoading, setNewsLoading] = useState(false);
+  const [newsError, setNewsError] = useState(null);
+  const [, tick] = useState(0);
+
+  const inputStyle = {
+    width: "100%", background: C.panel2, border: `1px solid ${C.line}`, borderRadius: 10,
+    color: C.text, padding: "12px 14px", fontSize: 16,
+    fontFamily: "'JetBrains Mono', ui-monospace, monospace", outline: "none", boxSizing: "border-box",
+  };
+
+  const showToast = (msg) => { setToast(msg); setTimeout(() => setToast(null), 2200); };
+
+  // ── Quote gratis: harga gold + kurs (tanpa API key) ──
+  const fetchQuote = async () => {
+    try {
+      const [p, k] = await Promise.all([fetchGoldPrice().catch(() => null), fetchKurs().catch(() => null)]);
+      if (p || k) {
+        setNews((prev) => ({
+          ...(prev || { bias: null, biasAlasan: "", berita: [], kalender: [] }),
+          harga: p ? p.toFixed(2) : (prev && prev.harga) || null,
+          kurs: k || (prev && prev.kurs) || null,
+        }));
+      }
+    } catch (e) {}
+  };
+
+  // ── Berita AI (butuh API key) ──
+  const fetchNews = async (force = false) => {
+    if (newsLoading) return;
+    if (!getApiKey()) { await fetchQuote(); return; }
+    if (!force) {
+      try {
+        const c = await window.storage.get(KEY_NEWS);
+        const cached = JSON.parse(c.value);
+        if (Date.now() - cached.ts < NEWS_TTL && cached.data) { setNews(cached.data); setNewsTs(cached.ts); fetchQuote(); return; }
+        if (cached.data) { setNews(cached.data); setNewsTs(cached.ts); }
+      } catch (e) {}
+    }
+    setNewsLoading(true); setNewsError(null);
+    const prompt = `Cari data terkini: harga XAUUSD gold spot, kurs USD ke IDR, berita penggerak gold hari ini, dan kalender ekonomi AS hari ini (jam dikonversi ke WIB/UTC+7).
+
+Balas HANYA baris-baris data dengan format persis ini, tanpa teks lain, tanpa markdown:
+HARGA|angka harga gold (contoh: 4025)
+KURS|angka kurs USDIDR (contoh: 16250)
+BIAS|bullish atau bearish atau netral|alasan 1 kalimat pendek Bahasa Indonesia
+NEWS|judul maks 10 kata Bahasa Indonesia|bullish/bearish/netral|ringkasan 1 kalimat pendek
+EVENT|HH:MM|tinggi/sedang|nama event|efek singkat ke gold
+
+Maksimal 4 baris NEWS dan 4 baris EVENT. Jika tidak ada event hari ini, tidak perlu baris EVENT. Setiap baris HARUS singkat.`;
+    let ok = false;
+    for (let attempt = 0; attempt < 2 && !ok; attempt++) {
+      try {
+        const raw = await callClaude([{ role: "user", content: prompt }], true);
+        const data = parseNewsLines(raw);
+        if (!data) throw new Error("parse kosong");
+        const ts = Date.now();
+        setNews((prev) => ({ ...data, harga: data.harga || (prev && prev.harga), kurs: data.kurs || (prev && prev.kurs) }));
+        setNewsTs(ts); ok = true;
+        try { await window.storage.set(KEY_NEWS, JSON.stringify({ ts, data })); } catch (e) {}
+      } catch (e) {
+        if (e.message === "NO_KEY") { setNewsError(null); break; }
+        if (attempt === 1) setNewsError("Gagal update berita AI — cek API key & koneksi, lalu tap Refresh.");
+      }
+    }
+    setNewsLoading(false);
+    fetchQuote();
+  };
+
+  useEffect(() => {
+    fetchQuote();
+    fetchNews(false);
+    const qI = setInterval(fetchQuote, 60000);
+    const nI = setInterval(() => { if (getApiKey()) fetchNews(true); }, NEWS_TTL);
+    const tI = setInterval(() => tick((x) => x + 1), 30000);
+    return () => { clearInterval(qI); clearInterval(nI); clearInterval(tI); };
+  }, []);
+
+  const upcomingEvent = useMemo(() => {
+    if (!news || !news.kalender) return null;
+    let best = null;
+    for (const ev of news.kalender) {
+      const m = minutesToEvent(ev.jamWIB);
+      if (m !== null && m >= -5 && m <= 60 && ev.dampak === "tinggi") {
+        if (!best || m < best.mins) best = { ...ev, mins: m };
+      }
+    }
+    return best;
+  }, [news, tick]);
+
+  // ── Init ──
+  useEffect(() => {
+    (async () => {
+      let meta = null;
+      try { const m = await window.storage.get(KEY_META); meta = JSON.parse(m.value); } catch (e) {}
+      if (!meta) {
+        const defId = "acc-" + Date.now().toString(36);
+        meta = { accounts: [{ id: defId, name: "Akun Utama" }], activeId: defId };
+        try {
+          await window.storage.set(tradesKey(defId), JSON.stringify([]));
+          await window.storage.set(KEY_META, JSON.stringify(meta));
+        } catch (e) {}
+      }
+      setAccounts(meta.accounts);
+      await loadAccount(meta.activeId);
+      try { const f = await window.storage.get(KEY_FIN); setFinance(JSON.parse(f.value)); } catch (e) {}
+      try { const t = await window.storage.get(KEY_TODO); setTodos(JSON.parse(t.value)); } catch (e) {}
+      try { const k = await window.storage.get(KEY_KURS); setKursManual(parseFloat(k.value)); } catch (e) {}
+      setLoaded(true);
+    })();
+  }, []);
+
+  const loadAccount = async (accId) => {
+    setActiveId(accId);
+    let t = [], s = DEFAULT_SETTINGS;
+    try { const r = await window.storage.get(tradesKey(accId)); t = JSON.parse(r.value); } catch (e) {}
+    try { const r = await window.storage.get(settingsKey(accId)); s = { ...DEFAULT_SETTINGS, ...JSON.parse(r.value) }; } catch (e) {}
+    setTrades(t); setSettings(s);
+  };
+
+  const persistMeta = async (accs, actId) => {
+    setAccounts(accs);
+    try { await window.storage.set(KEY_META, JSON.stringify({ accounts: accs, activeId: actId })); } catch (e) {}
+  };
+  const persistTrades = async (next) => {
+    setTrades(next);
+    try { await window.storage.set(tradesKey(activeId), JSON.stringify(next)); } catch (e) { showToast("Penyimpanan penuh — hapus beberapa gambar"); }
+  };
+  const persistSettings = async (next) => {
+    setSettings(next);
+    try { await window.storage.set(settingsKey(activeId), JSON.stringify(next)); } catch (e) {}
+  };
+  const persistFinance = async (next) => {
+    setFinance(next);
+    try { await window.storage.set(KEY_FIN, JSON.stringify(next)); } catch (e) { showToast("Gagal menyimpan"); }
+  };
+  const persistTodos = async (next) => {
+    setTodos(next);
+    try { await window.storage.set(KEY_TODO, JSON.stringify(next)); } catch (e) {}
+  };
+  const persistKurs = async (v) => {
+    setKursManual(v);
+    try { await window.storage.set(KEY_KURS, String(v)); } catch (e) {}
+  };
+
+  const switchAccount = async (accId) => {
+    await loadAccount(accId);
+    persistMeta(accounts, accId);
+    setShowAccounts(false);
+    showToast("Akun aktif: " + ((accounts.find((a) => a.id === accId) || {}).name || ""));
+  };
+  const addAccount = async (name) => {
+    const acc = { id: "acc-" + Date.now().toString(36), name };
+    const next = [...accounts, acc];
+    try { await window.storage.set(tradesKey(acc.id), JSON.stringify([])); } catch (e) {}
+    await persistMeta(next, acc.id);
+    await loadAccount(acc.id);
+    showToast(`Akun "${name}" dibuat`);
+  };
+  const deleteAccount = async (accId) => {
+    if (accounts.length <= 1) { showToast("Minimal harus ada 1 akun"); return; }
+    const next = accounts.filter((a) => a.id !== accId);
+    try {
+      const r = await window.storage.get(tradesKey(accId));
+      for (const t of JSON.parse(r.value)) { try { await window.storage.delete(imgKey(t.id)); } catch (e) {} }
+    } catch (e) {}
+    try { await window.storage.delete(tradesKey(accId)); await window.storage.delete(settingsKey(accId)); } catch (e) {}
+    const newActive = accId === activeId ? next[0].id : activeId;
+    await persistMeta(next, newActive);
+    if (accId === activeId) await loadAccount(newActive);
+    showToast("Akun dihapus");
+  };
+
+  // ── Statistik ──
+  const stats = useMemo(() => {
+    const total = trades.reduce((s, t) => s + t.pnl, 0);
+    const wins = trades.filter((t) => t.pnl > 0);
+    const losses = trades.filter((t) => t.pnl < 0);
+    const grossWin = wins.reduce((s, t) => s + t.pnl, 0);
+    const grossLoss = Math.abs(losses.reduce((s, t) => s + t.pnl, 0));
+    const winRate = trades.length ? (wins.length / trades.length) * 100 : 0;
+    const profitFactor = grossLoss > 0 ? grossWin / grossLoss : grossWin > 0 ? Infinity : 0;
+    const avgWin = wins.length ? grossWin / wins.length : 0;
+    const avgLoss = losses.length ? -grossLoss / losses.length : 0;
+    const chrono = [...trades].sort((a, b) => (a.date < b.date ? -1 : a.date > b.date ? 1 : 0));
+    let cum = 0, peak = 0, maxDD = 0;
+    const curve = chrono.map((t) => { cum += t.pnl; if (cum > peak) peak = cum; if (peak - cum > maxDD) maxDD = peak - cum; return cum; });
+    let streak = 0, streakType = null;
+    for (const t of trades) {
+      const w = t.pnl > 0;
+      if (streakType === null) { streakType = w; streak = 1; }
+      else if (w === streakType) streak++;
+      else break;
+    }
+    const bySession = {}, bySetup = {};
+    for (const t of trades) {
+      if (t.session) { bySession[t.session] = bySession[t.session] || { pnl: 0, n: 0, w: 0 }; bySession[t.session].pnl += t.pnl; bySession[t.session].n++; if (t.pnl > 0) bySession[t.session].w++; }
+      if (t.setup) { bySetup[t.setup] = bySetup[t.setup] || { pnl: 0, n: 0, w: 0 }; bySetup[t.setup].pnl += t.pnl; bySetup[t.setup].n++; if (t.pnl > 0) bySetup[t.setup].w++; }
+    }
+    const todayPnl = trades.filter((t) => t.date === localToday()).reduce((s, t) => s + t.pnl, 0);
+    return { total, winRate, wins: wins.length, losses: losses.length, profitFactor, avgWin, avgLoss, curve, maxDD, streak, streakType, best: trades.length ? Math.max(...trades.map((t) => t.pnl)) : 0, worst: trades.length ? Math.min(...trades.map((t) => t.pnl)) : 0, bySession, bySetup, todayPnl };
+  }, [trades]);
+
+  const lossLimitHit = settings.dailyLossLimit > 0 && stats.todayPnl <= -settings.dailyLossLimit;
+  const targetHit = settings.dailyTarget > 0 && stats.todayPnl >= settings.dailyTarget;
+  const kurs = kursManual || (news && news.kurs) || 16500;
+
+  const exportCsv = () => {
+    const head = "tanggal,arah,timeframe,sesi,setup,total_lot,avg_entry,exit,pnl,catatan";
+    const rows = trades.map((t) => [
+      t.date, t.direction || "", t.timeframe || "", t.session || "", t.setup || "",
+      t.totalLot != null ? t.totalLot.toFixed(2) : "", t.avgEntry != null ? t.avgEntry.toFixed(2) : "",
+      t.exit != null ? t.exit.toFixed(2) : "", t.pnl.toFixed(2),
+      `"${(t.note || "").replace(/"/g, '""')}"`,
+    ].join(","));
+    const blob = new Blob([[head, ...rows].join("\n")], { type: "text/csv" });
+    const a = document.createElement("a");
+    a.href = URL.createObjectURL(blob);
+    a.download = `jurnal-xauusd-${localToday()}.csv`;
+    a.click();
+    URL.revokeObjectURL(a.href);
+    showToast("CSV terunduh");
+  };
+
+  const activeAccount = accounts.find((a) => a.id === activeId);
+
+  return (
+    <div style={{ minHeight: "100vh", background: `radial-gradient(1200px 500px at 50% -180px, #1a1710 0%, ${C.ink} 55%)`, color: C.text, fontFamily: "'Space Grotesk', system-ui, sans-serif", maxWidth: 480, margin: "0 auto", paddingBottom: "calc(96px + env(safe-area-inset-bottom))" }}>
+      <TopBar activeAccount={activeAccount} onAccounts={() => setShowAccounts(true)} news={news} />
+
+      {upcomingEvent && (
+        <div style={{ margin: "0 18px 12px", padding: "11px 14px", borderRadius: 12, background: `${C.amber}14`, border: `1.5px solid ${C.amber}88`, display: "flex", alignItems: "center", gap: 10, animation: upcomingEvent.mins <= 15 ? "pulse 1.4s infinite" : "none" }}>
+          <span style={{ fontSize: 18 }}>⚠️</span>
+          <div style={{ flex: 1 }}>
+            <div style={{ fontSize: 13.5, fontWeight: 700, color: C.amber }}>
+              {upcomingEvent.event} {upcomingEvent.mins <= 0 ? "— SEDANG RILIS" : `dalam ${upcomingEvent.mins} menit`}
+            </div>
+            <div style={{ fontSize: 12, color: C.muted, lineHeight: 1.4 }}>
+              {upcomingEvent.jamWIB} WIB · {upcomingEvent.catatan || "Volatilitas tinggi — amankan posisi & hindari entry scalping"}
+            </div>
+          </div>
+        </div>
+      )}
+
+      <main style={{ padding: "0 18px" }}>
+        {tab === "dashboard" && <TabDashboard stats={stats} settings={settings} news={news} newsTs={newsTs} newsLoading={newsLoading} newsError={newsError} onRefresh={() => fetchNews(true)} todos={todos} trades={trades} goTab={setTab} lossLimitHit={lossLimitHit} targetHit={targetHit} hasKey={hasKey} />}
+        {tab === "catat" && <TabCatat trades={trades} persistTrades={persistTrades} showToast={showToast} inputStyle={inputStyle} settings={settings} lossLimitHit={lossLimitHit} targetHit={targetHit} todayPnl={stats.todayPnl} />}
+        {tab === "jurnal" && <TabJurnal trades={trades} persistTrades={persistTrades} loaded={loaded} exportCsv={exportCsv} showToast={showToast} setViewImg={setViewImg} stats={stats} />}
+        {tab === "keuangan" && <TabKeuangan finance={finance} persistFinance={persistFinance} inputStyle={inputStyle} showToast={showToast} kurs={kurs} persistKurs={persistKurs} kursFromNews={news && news.kurs} />}
+        {tab === "alat" && <TabAlat inputStyle={inputStyle} settings={settings} persistSettings={persistSettings} showToast={showToast} todos={todos} persistTodos={persistTodos} stats={stats} trades={trades} hasKey={hasKey} setHasKey={setHasKey} onKeySaved={() => fetchNews(true)} />}
+      </main>
+
+      <nav style={{ position: "fixed", bottom: 0, left: 0, right: 0, maxWidth: 480, margin: "0 auto", background: `${C.panel}F5`, backdropFilter: "blur(14px)", borderTop: `1px solid ${C.line}`, display: "flex", paddingBottom: "env(safe-area-inset-bottom)" }}>
+        {[
+          { k: "dashboard", label: "Dashboard", ic: "◆" }, { k: "catat", label: "Catat", ic: "＋" },
+          { k: "jurnal", label: "Jurnal", ic: "≣" }, { k: "keuangan", label: "Keuangan", ic: "Rp" }, { k: "alat", label: "Alat", ic: "⚙" },
+        ].map((t) => (
+          <button key={t.k} onClick={() => setTab(t.k)} style={{
+            flex: 1, padding: "10px 0 14px", background: "transparent", border: "none",
+            borderTop: `2px solid ${tab === t.k ? C.gold : "transparent"}`,
+            color: tab === t.k ? C.gold : C.muted, fontFamily: "inherit", position: "relative",
+          }}>
+            <div style={{ fontSize: 15, lineHeight: 1.2 }}>{t.ic}</div>
+            <div style={{ fontSize: 10.5, fontWeight: 600, letterSpacing: 0.3, marginTop: 2 }}>{t.label}</div>
+            {t.k === "dashboard" && upcomingEvent && <span style={{ position: "absolute", top: 8, right: "26%", width: 7, height: 7, borderRadius: 4, background: C.amber }} />}
+          </button>
+        ))}
+      </nav>
+
+      {showAccounts && (
+        <AccountSheet accounts={accounts} activeId={activeId} onSwitch={switchAccount} onAdd={addAccount} onDelete={deleteAccount} onClose={() => setShowAccounts(false)} inputStyle={inputStyle} />
+      )}
+
+      {viewImg && (
+        <div onClick={() => setViewImg(null)} style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,.88)", zIndex: 100, display: "flex", alignItems: "center", justifyContent: "center", padding: 16 }}>
+          <img src={viewImg} alt="Chart trade" style={{ maxWidth: "100%", maxHeight: "85vh", borderRadius: 12, border: `1px solid ${C.line}` }} />
+        </div>
+      )}
+
+      {toast && (
+        <div style={{ position: "fixed", bottom: 90, left: "50%", transform: "translateX(-50%)", background: C.gold, color: "#1a1508", padding: "10px 18px", borderRadius: 24, fontSize: 13.5, fontWeight: 600, fontFamily: "'JetBrains Mono', monospace", boxShadow: "0 6px 24px rgba(0,0,0,.45)", zIndex: 110, whiteSpace: "nowrap" }}>{toast}</div>
+      )}
+    </div>
+  );
+}
+
+// ═══ Top bar ═════════════════════════════════════════════════
+function TopBar({ activeAccount, onAccounts, news }) {
+  const act = activeSessionWIB();
+  return (
+    <header style={{ padding: "calc(18px + env(safe-area-inset-top)) 18px 10px", display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+      <div>
+        <div style={{ fontFamily: "'JetBrains Mono', monospace", fontSize: 10, letterSpacing: 3, color: C.goldDim, fontWeight: 600 }}>XAU/USD TERMINAL</div>
+        <div style={{ fontSize: 19, fontWeight: 700, letterSpacing: -0.4, background: `linear-gradient(90deg, ${C.gold2}, ${C.gold})`, WebkitBackgroundClip: "text", WebkitTextFillColor: "transparent" }}>Jurnal Emas Pro</div>
+      </div>
+      <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+        <div style={{ textAlign: "right" }}>
+          <div style={{ fontSize: 9.5, fontFamily: "'JetBrains Mono', monospace", color: C.muted, letterSpacing: 1 }}>
+            {act.length ? act.map((s) => s.toUpperCase()).join(" · ") : "MARKET TENANG"}
+          </div>
+          {news && news.harga && (
+            <Mono size={13} color={news.bias ? impactColor(news.bias) : C.gold}>${news.harga}</Mono>
+          )}
+        </div>
+        <button onClick={onAccounts} style={{ background: C.panel, border: `1px solid ${C.line}`, borderRadius: 14, padding: "6px 11px", color: C.gold, fontSize: 11, fontWeight: 700, fontFamily: "'JetBrains Mono', monospace" }}>
+          ◈ {activeAccount ? activeAccount.name.split(" ")[0].toUpperCase().slice(0, 8) : "…"}
+        </button>
+      </div>
+    </header>
+  );
+}
+
+// ═══ Tab: Dashboard ══════════════════════════════════════════
+function TabDashboard({ stats, settings, news, newsTs, newsLoading, newsError, onRefresh, todos, trades, goTab, lossLimitHit, targetHit, hasKey }) {
+  const hasTarget = settings.dailyTarget > 0;
+  const hasLimit = settings.dailyLossLimit > 0;
+  const progressPct = hasTarget && stats.todayPnl > 0 ? Math.min(100, (stats.todayPnl / settings.dailyTarget) * 100)
+    : hasLimit && stats.todayPnl < 0 ? Math.min(100, (Math.abs(stats.todayPnl) / settings.dailyLossLimit) * 100) : 0;
+  const umur = newsTs ? Math.round((Date.now() - newsTs) / 60000) : null;
+  const openTodos = todos.filter((t) => !t.done).slice(0, 3);
+  const pf = stats.profitFactor === Infinity ? "∞" : stats.profitFactor.toFixed(2);
+
+  return (
+    <div className="fadeUp">
+      <div style={{ borderRadius: 20, padding: "18px 16px", marginBottom: 12, background: `linear-gradient(150deg, #1c1a12 0%, ${C.panel} 45%, ${C.panel} 100%)`, border: `1px solid ${lossLimitHit ? C.loss + "66" : targetHit ? C.profit + "66" : C.goldDim + "55"}`, position: "relative", overflow: "hidden" }}>
+        <div style={{ position: "absolute", top: -60, right: -40, width: 180, height: 180, borderRadius: "50%", background: `radial-gradient(circle, ${C.gold}22, transparent 70%)` }} />
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start" }}>
+          <div>
+            <div style={{ fontSize: 10.5, color: C.muted, letterSpacing: 1.8, textTransform: "uppercase" }}>P/L Hari Ini</div>
+            <Mono size={34} color={stats.todayPnl > 0 ? C.profit : stats.todayPnl < 0 ? C.loss : C.text}>{fmtUsd(stats.todayPnl)}</Mono>
+          </div>
+          {news && news.bias && (
+            <div style={{ textAlign: "right" }}>
+              <div style={{ fontSize: 10.5, color: C.muted, letterSpacing: 1.5, textTransform: "uppercase" }}>Bias AI</div>
+              <div style={{ display: "inline-block", padding: "4px 12px", borderRadius: 14, background: `${impactColor(news.bias)}1C`, border: `1px solid ${impactColor(news.bias)}66` }}>
+                <Mono size={13} color={impactColor(news.bias)}>{news.bias.toUpperCase()}</Mono>
+              </div>
+            </div>
+          )}
+        </div>
+        {(hasTarget || hasLimit) && (
+          <div style={{ marginTop: 12 }}>
+            <div style={{ height: 6, background: "#0d0e12", borderRadius: 4, overflow: "hidden" }}>
+              <div style={{ height: "100%", width: `${progressPct}%`, background: stats.todayPnl >= 0 ? `linear-gradient(90deg, ${C.profit}, #6EE7B7)` : `linear-gradient(90deg, ${C.loss}, #FCA5A5)`, borderRadius: 4, transition: "width .3s" }} />
+            </div>
+            <div style={{ display: "flex", justifyContent: "space-between", marginTop: 5, fontSize: 10.5, color: C.muted, fontFamily: "'JetBrains Mono', monospace" }}>
+              <span>{hasLimit ? `Batas ${fmtUsd(-settings.dailyLossLimit)}` : ""}</span>
+              <span>{hasTarget ? `Target ${fmtUsd(settings.dailyTarget)}` : ""}</span>
+            </div>
+          </div>
+        )}
+        <div style={{ display: "flex", gap: 0, marginTop: 14, borderTop: `1px solid ${C.line}`, paddingTop: 12 }}>
+          {[
+            { l: "Total P/L", v: fmtUsd(stats.total), c: stats.total >= 0 ? C.profit : C.loss },
+            { l: "Win rate", v: stats.winRate.toFixed(0) + "%", c: C.gold },
+            { l: "P. Factor", v: pf, c: stats.profitFactor >= 1.5 ? C.profit : stats.profitFactor >= 1 ? C.gold : C.loss },
+            { l: "Streak", v: stats.streakType === null ? "—" : `${stats.streak}${stats.streakType ? "W" : "L"}`, c: stats.streakType === null ? C.muted : stats.streakType ? C.profit : C.loss },
+          ].map((s) => (
+            <div key={s.l} style={{ flex: 1, textAlign: "center" }}>
+              <Mono size={14} color={s.c}>{s.v}</Mono>
+              <div style={{ fontSize: 9.5, color: C.muted, letterSpacing: 1, textTransform: "uppercase", marginTop: 2 }}>{s.l}</div>
+            </div>
+          ))}
+        </div>
+      </div>
+
+      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10, marginBottom: 4 }}>
+        <button onClick={() => goTab("catat")} style={{ padding: "13px 0", borderRadius: 14, border: "none", background: `linear-gradient(135deg, ${C.gold2}, ${C.gold} 45%, #c9a23e)`, color: "#1a1508", fontSize: 14, fontWeight: 700, fontFamily: "inherit", boxShadow: "0 4px 18px rgba(233,194,91,.2)" }}>＋ Catat Trade</button>
+        <button onClick={() => goTab("alat")} style={{ padding: "13px 0", borderRadius: 14, border: `1.5px solid ${C.line}`, background: C.panel, color: C.text, fontSize: 14, fontWeight: 700, fontFamily: "inherit" }}>🤖 Analisa & Coach</button>
+      </div>
+
+      <SectionTitle>Berita & Market</SectionTitle>
+      <Card style={{ padding: 0, overflow: "hidden" }}>
+        <div style={{ padding: "12px 14px", borderBottom: `1px solid ${C.line}`, display: "flex", justifyContent: "space-between", alignItems: "center", background: C.panel2 }}>
+          <div>
+            <Mono size={12} color={C.muted} weight={400}>GOLD SPOT · LIVE</Mono>
+            <div style={{ display: "flex", alignItems: "baseline", gap: 8 }}>
+              <Mono size={20} color={C.gold}>{news && news.harga ? `$${news.harga}` : "—"}</Mono>
+              {news && news.bias && <Mono size={11} color={impactColor(news.bias)}>{news.bias.toUpperCase()}</Mono>}
+            </div>
+          </div>
+          <button onClick={onRefresh} disabled={newsLoading} style={{ background: "transparent", border: `1px solid ${C.blue}66`, borderRadius: 16, padding: "6px 13px", color: C.blue, fontSize: 12, fontWeight: 600, fontFamily: "inherit" }}>
+            {newsLoading ? "⟳ Memuat…" : "↻ Refresh"}
+          </button>
+        </div>
+
+        {news && news.biasAlasan && (
+          <div style={{ padding: "10px 14px", fontSize: 12.5, color: C.text, opacity: 0.85, lineHeight: 1.5, borderBottom: `1px solid ${C.line}` }}>
+            {news.biasAlasan}
+          </div>
+        )}
+
+        {news && news.berita && news.berita.length > 0 ? (
+          news.berita.map((b, i) => (
+            <div key={i} style={{ padding: "10px 14px", borderBottom: `1px solid ${C.line}`, display: "flex", gap: 9, alignItems: "flex-start" }}>
+              <span style={{ marginTop: 5, width: 8, height: 8, borderRadius: 4, flexShrink: 0, background: impactColor(b.dampak) }} />
+              <div>
+                <div style={{ fontSize: 13, fontWeight: 600, lineHeight: 1.4 }}>{b.judul}</div>
+                {b.ringkasan && <div style={{ fontSize: 12, color: C.muted, lineHeight: 1.45, marginTop: 2 }}>{b.ringkasan}</div>}
+              </div>
+            </div>
+          ))
+        ) : !hasKey ? (
+          <div style={{ padding: "14px" }}>
+            <div style={{ fontSize: 13, color: C.muted, lineHeight: 1.55 }}>
+              Harga & kurs live sudah aktif ✓. Untuk berita AI, bias harian, kalender news + pengingat otomatis, isi <b style={{ color: C.gold }}>API key</b> di tab Alat.
+            </div>
+          </div>
+        ) : newsError ? (
+          <div style={{ padding: "14px" }}><div style={{ fontSize: 13, color: C.loss }}>{newsError}</div></div>
+        ) : (
+          <div style={{ padding: "14px", fontSize: 13, color: C.muted }}>⏳ Memuat berita gold…</div>
+        )}
+        <div style={{ padding: "8px 14px", fontSize: 10.5, color: C.muted, fontFamily: "'JetBrains Mono', monospace", background: C.panel2 }}>
+          Harga auto tiap 1 mnt{hasKey ? ` · berita AI tiap 15 mnt${umur !== null ? ` (update ${umur < 1 ? "baru saja" : umur + " mnt lalu"})` : ""}` : ""}
+        </div>
+      </Card>
+
+      {news && news.kalender && news.kalender.length > 0 && (
+        <React.Fragment>
+          <SectionTitle>News Hari Ini (WIB)</SectionTitle>
+          <Card>
+            {news.kalender.map((ev, i) => {
+              const m = minutesToEvent(ev.jamWIB);
+              const passed = m !== null && m < -5;
+              const soon = m !== null && m >= -5 && m <= 60;
+              return (
+                <div key={i} style={{ display: "flex", alignItems: "center", gap: 10, padding: "8px 0", borderBottom: `1px solid ${C.line}`, opacity: passed ? 0.45 : 1 }}>
+                  <Mono size={13} color={soon ? C.amber : C.text}>{ev.jamWIB}</Mono>
+                  <div style={{ flex: 1 }}>
+                    <span style={{ fontSize: 13, fontWeight: 600 }}>{ev.event}</span>
+                    <span style={{ marginLeft: 7, fontSize: 9.5, padding: "2px 7px", borderRadius: 8, background: ev.dampak === "tinggi" ? `${C.loss}20` : `${C.amber}18`, color: ev.dampak === "tinggi" ? C.loss : C.amber, fontWeight: 700 }}>
+                      {ev.dampak === "tinggi" ? "HIGH" : "MED"}
+                    </span>
+                  </div>
+                  <Mono size={11} color={passed ? C.muted : soon ? C.amber : C.muted}>
+                    {m === null ? "" : passed ? "✓" : m <= 0 ? "RILIS" : m < 60 ? `${m}m` : `${Math.floor(m / 60)}j${m % 60}m`}
+                  </Mono>
+                </div>
+              );
+            })}
+          </Card>
+        </React.Fragment>
+      )}
+
+      {stats.curve.length >= 2 && (
+        <React.Fragment>
+          <SectionTitle>Ekuitas</SectionTitle>
+          <Card><EquityCurve data={stats.curve} /></Card>
+        </React.Fragment>
+      )}
+
+      {openTodos.length > 0 && (
+        <React.Fragment>
+          <SectionTitle>To-Do Trading</SectionTitle>
+          <Card>
+            {openTodos.map((t) => (
+              <div key={t.id} style={{ display: "flex", alignItems: "center", gap: 9, padding: "6px 0" }}>
+                <span style={{ width: 7, height: 7, borderRadius: 4, background: C.gold, flexShrink: 0 }} />
+                <span style={{ fontSize: 13.5, flex: 1 }}>{t.text}</span>
+                <span style={{ fontSize: 10, color: C.muted }}>{t.cat}</span>
+              </div>
+            ))}
+            <button onClick={() => goTab("alat")} style={{ marginTop: 6, background: "transparent", border: "none", color: C.blue, fontSize: 12.5, fontWeight: 600, fontFamily: "inherit", padding: 0 }}>Kelola semua →</button>
+          </Card>
+        </React.Fragment>
+      )}
+    </div>
+  );
+}
+
+// ═══ Sheet akun ══════════════════════════════════════════════
+function AccountSheet({ accounts, activeId, onSwitch, onAdd, onDelete, onClose, inputStyle }) {
+  const [name, setName] = useState("");
+  return (
+    <div onClick={onClose} style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,.7)", zIndex: 90, display: "flex", alignItems: "flex-end", justifyContent: "center" }}>
+      <div onClick={(e) => e.stopPropagation()} style={{ width: "100%", maxWidth: 480, background: C.panel, borderRadius: "20px 20px 0 0", border: `1px solid ${C.line}`, padding: "18px 18px calc(28px + env(safe-area-inset-bottom))" }}>
+        <div style={{ width: 38, height: 4, borderRadius: 2, background: C.line, margin: "0 auto 16px" }} />
+        <Label>Akun trading</Label>
+        {accounts.map((a) => (
+          <div key={a.id} style={{ display: "flex", alignItems: "center", gap: 10, padding: "11px 0", borderBottom: `1px solid ${C.line}` }}>
+            <button onClick={() => onSwitch(a.id)} style={{ flex: 1, textAlign: "left", background: "transparent", border: "none", color: a.id === activeId ? C.gold : C.text, fontSize: 15, fontWeight: 600, fontFamily: "inherit", padding: 0 }}>
+              {a.id === activeId ? "◈ " : ""}{a.name}
+            </button>
+            {accounts.length > 1 && (
+              <button onClick={() => { if (confirm(`Hapus akun "${a.name}" beserta seluruh datanya?`)) onDelete(a.id); }} style={{ background: "transparent", border: "none", color: C.muted, fontSize: 12, textDecoration: "underline", fontFamily: "inherit" }}>Hapus</button>
+            )}
+          </div>
+        ))}
+        <div style={{ display: "flex", gap: 8, marginTop: 14 }}>
+          <input placeholder="Nama akun baru (mis. Akun Cent)" value={name} onChange={(e) => setName(e.target.value)} style={{ ...inputStyle, flex: 1, fontFamily: "inherit" }} />
+          <button onClick={() => { if (name.trim()) { onAdd(name.trim()); setName(""); } }} style={{ padding: "0 18px", borderRadius: 10, border: "none", background: C.gold, color: "#1a1508", fontWeight: 700, fontFamily: "inherit", fontSize: 14 }}>+ Buat</button>
+        </div>
+        <p style={{ fontSize: 12, color: C.muted, marginTop: 10, marginBottom: 0, lineHeight: 1.5 }}>Tiap akun punya jurnal, statistik, dan pengaturan disiplin sendiri.</p>
+      </div>
+    </div>
+  );
+}
+
+// ═══ Tab: Catat ══════════════════════════════════════════════
+function TabCatat({ trades, persistTrades, showToast, inputStyle, settings, lossLimitHit, targetHit, todayPnl }) {
+  const [mode, setMode] = useState("layer");
+  const [direction, setDirection] = useState("buy");
+  const [layers, setLayers] = useState([{ lot: "", price: "" }]);
+  const [exitPrice, setExitPrice] = useState("");
+  const [note, setNote] = useState("");
+  const [date, setDate] = useState(localToday());
+  const [setup, setSetup] = useState("");
+  const [session, setSession] = useState(activeSessionWIB()[0] || "London");
+  const [timeframe, setTimeframe] = useState("scalp");
+  const [simplePnl, setSimplePnl] = useState("");
+  const [checks, setChecks] = useState({});
+  const [imgData, setImgData] = useState(null);
+  const [imgBusy, setImgBusy] = useState(false);
+  const [override, setOverride] = useState(false);
+  const fileRef = useRef(null);
+
+  const checklistItems = settings.checklistItems || DEFAULT_CHECKLIST;
+  const checklistDone = !settings.checklistOn || checklistItems.every((_, i) => checks[i]);
+
+  const calc = useMemo(() => {
+    const valid = layers.map((l) => ({ lot: parseFloat(l.lot), price: parseFloat(l.price) })).filter((l) => l.lot > 0 && l.price > 0);
+    const totalLot = valid.reduce((s, l) => s + l.lot, 0);
+    const avgEntry = totalLot > 0 ? valid.reduce((s, l) => s + l.lot * l.price, 0) / totalLot : 0;
+    const exit = parseFloat(exitPrice);
+    let pnl = null;
+    if (totalLot > 0 && exit > 0) pnl = (exit - avgEntry) * CONTRACT_SIZE * totalLot * (direction === "buy" ? 1 : -1);
+    return { valid, totalLot, avgEntry, pnl };
+  }, [layers, exitPrice, direction]);
+
+  const maxLot = Math.max(...calc.valid.map((l) => l.lot), 0.01);
+
+  const pickImage = async (e) => {
+    const file = e.target.files && e.target.files[0];
+    if (!file) return;
+    setImgBusy(true);
+    try {
+      const data = await compressImage(file);
+      if (data.length > 2 * 1024 * 1024) showToast("Gambar terlalu besar setelah kompresi");
+      else setImgData(data);
+    } catch (err) { showToast("Gagal memproses gambar"); }
+    setImgBusy(false);
+    e.target.value = "";
+  };
+
+  const save = async () => {
+    if (!checklistDone) { showToast("Selesaikan checklist disiplin dulu"); return; }
+    let t;
+    if (mode === "layer") {
+      if (calc.pnl === null) { showToast("Isi minimal 1 layer dan harga exit"); return; }
+      t = { id: Date.now().toString(36), type: "layer", date, direction, layers: calc.valid, totalLot: calc.totalLot, avgEntry: calc.avgEntry, exit: parseFloat(exitPrice), pnl: calc.pnl, note: note.trim(), setup, session, timeframe, hasImg: !!imgData };
+      setLayers([{ lot: "", price: "" }]); setExitPrice("");
+    } else {
+      const v = parseFloat(simplePnl);
+      if (isNaN(v) || v === 0) { showToast("Masukkan nominal profit (+) atau loss (−)"); return; }
+      t = { id: Date.now().toString(36), type: "simple", date, pnl: v, note: note.trim(), setup, session, timeframe, hasImg: !!imgData };
+      setSimplePnl("");
+    }
+    await persistTrades([t, ...trades]);
+    if (imgData) { try { await window.storage.set(imgKey(t.id), imgData); } catch (e) { showToast("Trade tersimpan, gambar gagal (memori penuh)"); } }
+    setNote(""); setChecks({}); setImgData(null); setOverride(false);
+    showToast(`Tersimpan · ${fmtUsd(t.pnl)}`);
+  };
+
+  if (lossLimitHit && !override) {
+    return (
+      <Card style={{ borderColor: `${C.loss}77`, textAlign: "center", padding: "30px 20px" }}>
+        <div style={{ fontSize: 36, marginBottom: 8 }}>🛑</div>
+        <div style={{ fontSize: 17, fontWeight: 700, color: C.loss, marginBottom: 6 }}>Auto-stop aktif</div>
+        <p style={{ fontSize: 13.5, color: C.muted, lineHeight: 1.6, margin: "0 0 4px" }}>
+          Loss hari ini <Mono size={13.5} color={C.loss}>{fmtUsd(todayPnl)}</Mono> sudah menyentuh batas <Mono size={13.5} color={C.loss}>{fmtUsd(-settings.dailyLossLimit)}</Mono>.
+        </p>
+        <p style={{ fontSize: 13.5, color: C.muted, lineHeight: 1.6, margin: "0 0 18px" }}>
+          Tutup chart, istirahat. Market masih ada besok — modal yang dijaga hari ini adalah peluru buat besok. 💪
+        </p>
+        <button onClick={() => setOverride(true)} style={{ background: "transparent", border: "none", color: C.muted, fontSize: 12, textDecoration: "underline", fontFamily: "inherit" }}>
+          Saya tetap perlu mencatat trade yang sudah terjadi
+        </button>
+      </Card>
+    );
+  }
+
+  return (
+    <div className="fadeUp">
+      {targetHit && (
+        <Card style={{ borderColor: `${C.profit}66`, background: `${C.profit}0C` }}>
+          <div style={{ fontSize: 13.5, lineHeight: 1.55 }}>
+            🎯 <b style={{ color: C.profit }}>Target harian tercapai</b> ({fmtUsd(todayPnl)}). Scalper disiplin tahu kapan berhenti.
+          </div>
+        </Card>
+      )}
+      {lossLimitHit && override && (
+        <Card style={{ borderColor: `${C.loss}66`, background: `${C.loss}0C` }}>
+          <div style={{ fontSize: 13, color: C.loss }}>⚠️ Batas loss harian sudah lewat — catat trade yang sudah terjadi saja, jangan buka posisi baru.</div>
+        </Card>
+      )}
+
+      <div style={{ display: "flex", background: C.panel, borderRadius: 12, padding: 4, marginBottom: 14, border: `1px solid ${C.line}` }}>
+        {[{ k: "layer", label: "Hitung dari layer" }, { k: "simple", label: "Catat P/L saja" }].map((m) => (
+          <button key={m.k} onClick={() => setMode(m.k)} style={{ flex: 1, padding: "10px 0", borderRadius: 9, border: "none", fontSize: 13.5, fontWeight: 600, fontFamily: "inherit", background: mode === m.k ? C.gold : "transparent", color: mode === m.k ? "#1a1508" : C.muted }}>{m.label}</button>
+        ))}
+      </div>
+
+      {settings.checklistOn && (
+        <Card style={{ borderColor: checklistDone ? `${C.profit}55` : `${C.gold}44` }}>
+          <Label>Checklist disiplin {checklistDone ? "✓" : `(${checklistItems.filter((_, i) => checks[i]).length}/${checklistItems.length})`}</Label>
+          {checklistItems.map((item, i) => (
+            <button key={i} onClick={() => setChecks({ ...checks, [i]: !checks[i] })} style={{ display: "flex", alignItems: "center", gap: 10, width: "100%", background: "transparent", border: "none", padding: "7px 0", textAlign: "left", fontFamily: "inherit" }}>
+              <span style={{ width: 20, height: 20, borderRadius: 6, flexShrink: 0, border: `1.5px solid ${checks[i] ? C.profit : C.line}`, background: checks[i] ? `${C.profit}22` : "transparent", color: C.profit, fontSize: 13, display: "flex", alignItems: "center", justifyContent: "center", fontWeight: 700 }}>{checks[i] ? "✓" : ""}</span>
+              <span style={{ fontSize: 13.5, color: checks[i] ? C.text : C.muted, lineHeight: 1.4 }}>{item}</span>
+            </button>
+          ))}
+        </Card>
+      )}
+
+      {mode === "layer" ? (
+        <React.Fragment>
+          <div style={{ display: "flex", gap: 8, marginBottom: 14 }}>
+            {[{ k: "buy", label: "BUY", col: C.profit }, { k: "sell", label: "SELL", col: C.loss }].map((d) => (
+              <button key={d.k} onClick={() => setDirection(d.k)} style={{ flex: 1, padding: "11px 0", borderRadius: 10, fontFamily: "'JetBrains Mono', monospace", fontWeight: 600, fontSize: 14, letterSpacing: 2, border: `1.5px solid ${direction === d.k ? d.col : C.line}`, background: direction === d.k ? `${d.col}18` : "transparent", color: direction === d.k ? d.col : C.muted }}>{d.label}</button>
+            ))}
+          </div>
+
+          <Label>Layer entry</Label>
+          {layers.map((l, i) => (
+            <div key={i} style={{ display: "flex", gap: 8, marginBottom: 8, alignItems: "center" }}>
+              <Mono size={12} color={C.goldDim}>{i + 1}</Mono>
+              <input type="number" inputMode="decimal" placeholder="Lot" value={l.lot} onChange={(e) => { const n = [...layers]; n[i] = { ...n[i], lot: e.target.value }; setLayers(n); }} style={{ ...inputStyle, flex: 1 }} />
+              <input type="number" inputMode="decimal" placeholder="Harga entry" value={l.price} onChange={(e) => { const n = [...layers]; n[i] = { ...n[i], price: e.target.value }; setLayers(n); }} style={{ ...inputStyle, flex: 1.6 }} />
+              {layers.length > 1 && <button onClick={() => setLayers(layers.filter((_, j) => j !== i))} style={{ background: "transparent", border: "none", color: C.muted, fontSize: 18, padding: "0 4px" }}>×</button>}
+            </div>
+          ))}
+          <button onClick={() => setLayers([...layers, { lot: "", price: "" }])} style={{ width: "100%", padding: "10px 0", borderRadius: 10, border: `1px dashed ${C.goldDim}`, background: "transparent", color: C.gold, fontSize: 13.5, fontWeight: 600, fontFamily: "inherit", marginBottom: 14 }}>+ Tambah layer</button>
+
+          {calc.valid.length > 0 && (
+            <Card>
+              {calc.valid.map((l, i) => (
+                <div key={i} style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 6 }}>
+                  <div style={{ height: 10, width: `${(l.lot / maxLot) * 55 + 8}%`, borderRadius: 5, background: `linear-gradient(90deg, ${C.goldDim}, ${C.gold})` }} />
+                  <Mono size={12} color={C.muted} weight={400}>{fmt2(l.lot)} @ {fmt2(l.price)}</Mono>
+                </div>
+              ))}
+              <div style={{ display: "flex", justifyContent: "space-between", borderTop: `1px solid ${C.line}`, marginTop: 10, paddingTop: 10 }}>
+                <div><div style={{ fontSize: 10.5, color: C.muted, letterSpacing: 1.2, textTransform: "uppercase" }}>Total lot</div><Mono size={17} color={C.gold}>{fmt2(calc.totalLot)}</Mono></div>
+                <div style={{ textAlign: "right" }}><div style={{ fontSize: 10.5, color: C.muted, letterSpacing: 1.2, textTransform: "uppercase" }}>Avg entry</div><Mono size={17}>{fmt2(calc.avgEntry)}</Mono></div>
+              </div>
+            </Card>
+          )}
+
+          <div style={{ display: "flex", gap: 8, marginBottom: 12 }}>
+            <input type="number" inputMode="decimal" placeholder="Harga exit" value={exitPrice} onChange={(e) => setExitPrice(e.target.value)} style={{ ...inputStyle, flex: 1.4 }} />
+            <input type="date" value={date} onChange={(e) => setDate(e.target.value)} style={{ ...inputStyle, flex: 1 }} />
+          </div>
+
+          {calc.pnl !== null && (
+            <div style={{ textAlign: "center", padding: "14px 0", borderRadius: 14, marginBottom: 12, background: calc.pnl >= 0 ? `${C.profit}12` : `${C.loss}12`, border: `1px solid ${calc.pnl >= 0 ? C.profit : C.loss}44` }}>
+              <div style={{ fontSize: 11, color: C.muted, letterSpacing: 1.5, textTransform: "uppercase" }}>{calc.pnl >= 0 ? "Estimasi profit" : "Estimasi loss"}</div>
+              <Mono size={28} color={calc.pnl >= 0 ? C.profit : C.loss}>{fmtUsd(calc.pnl)}</Mono>
+            </div>
+          )}
+        </React.Fragment>
+      ) : (
+        <React.Fragment>
+          <p style={{ fontSize: 13.5, color: C.muted, lineHeight: 1.55, marginTop: 0 }}>
+            Cukup catat hasil bersihnya. Angka minus untuk loss, contoh <Mono size={13} color={C.loss}>-125.50</Mono>.
+          </p>
+          <div style={{ display: "flex", gap: 8, marginBottom: 12 }}>
+            <input type="number" inputMode="decimal" placeholder="Profit / loss ($)" value={simplePnl} onChange={(e) => setSimplePnl(e.target.value)} style={{ ...inputStyle, flex: 1.4, fontSize: 18 }} />
+            <input type="date" value={date} onChange={(e) => setDate(e.target.value)} style={{ ...inputStyle, flex: 1 }} />
+          </div>
+        </React.Fragment>
+      )}
+
+      <Card>
+        <Label>Screenshot chart (opsional)</Label>
+        {imgData ? (
+          <div style={{ position: "relative" }}>
+            <img src={imgData} alt="Preview chart" style={{ width: "100%", borderRadius: 10, border: `1px solid ${C.line}`, display: "block" }} />
+            <button onClick={() => setImgData(null)} style={{ position: "absolute", top: 8, right: 8, background: "rgba(0,0,0,.7)", border: "none", color: "#fff", borderRadius: 14, padding: "4px 12px", fontSize: 12, fontFamily: "inherit" }}>Hapus</button>
+          </div>
+        ) : (
+          <button onClick={() => fileRef.current && fileRef.current.click()} disabled={imgBusy} style={{ width: "100%", padding: "13px 0", borderRadius: 10, border: `1px dashed ${C.line}`, background: "transparent", color: C.muted, fontSize: 13.5, fontFamily: "inherit" }}>
+            {imgBusy ? "Memproses…" : "📷 Tambah screenshot chart"}
+          </button>
+        )}
+        <input ref={fileRef} type="file" accept="image/*" onChange={pickImage} style={{ display: "none" }} />
+      </Card>
+
+      <Card>
+        <Label>Gaya trading</Label>
+        <Chips options={TIMEFRAMES} value={timeframe} onChange={setTimeframe} />
+        <div style={{ height: 12 }} />
+        <Label>Sesi market</Label>
+        <Chips options={SESSIONS} value={session} onChange={setSession} colorFn={() => C.blue} />
+        <div style={{ height: 12 }} />
+        <Label>Setup</Label>
+        <Chips options={SETUPS} value={setup} onChange={(v) => setSetup(v === setup ? "" : v)} />
+      </Card>
+
+      <textarea placeholder="Catatan (opsional) — alasan entry, kondisi market…" value={note} onChange={(e) => setNote(e.target.value)} rows={2} style={{ ...inputStyle, resize: "none", fontFamily: "inherit", marginBottom: 12 }} />
+      <GoldBtn onClick={save} disabled={!checklistDone}>
+        {checklistDone ? "Simpan trade" : "Selesaikan checklist dulu"}
+      </GoldBtn>
+    </div>
+  );
+}
+
+// ═══ Tab: Jurnal ═════════════════════════════════════════════
+function TabJurnal({ trades, persistTrades, loaded, exportCsv, showToast, setViewImg, stats }) {
+  const [sub, setSub] = useState("riwayat");
+  const [filter, setFilter] = useState("semua");
+  const filtered = trades.filter((t) => filter === "semua" || (filter === "profit" ? t.pnl > 0 : filter === "loss" ? t.pnl < 0 : t.timeframe === filter));
+
+  const openImg = async (id) => {
+    try {
+      const r = await window.storage.get(imgKey(id));
+      setViewImg(r.value);
+    } catch (e) { showToast("Gambar tidak ditemukan"); }
+  };
+  const del = async (t) => {
+    await persistTrades(trades.filter((x) => x.id !== t.id));
+    if (t.hasImg) { try { await window.storage.delete(imgKey(t.id)); } catch (e) {} }
+    showToast("Entri dihapus");
+  };
+
+  if (!loaded) return <p style={{ color: C.muted, textAlign: "center", padding: 40 }}>Memuat…</p>;
+
+  return (
+    <div className="fadeUp">
+      <div style={{ display: "flex", background: C.panel, borderRadius: 12, padding: 4, marginBottom: 14, border: `1px solid ${C.line}` }}>
+        {[{ k: "riwayat", label: "Riwayat" }, { k: "statistik", label: "Statistik" }].map((m) => (
+          <button key={m.k} onClick={() => setSub(m.k)} style={{ flex: 1, padding: "10px 0", borderRadius: 9, border: "none", fontSize: 13.5, fontWeight: 600, fontFamily: "inherit", background: sub === m.k ? C.gold : "transparent", color: sub === m.k ? "#1a1508" : C.muted }}>{m.label}</button>
+        ))}
+      </div>
+
+      {sub === "riwayat" ? (
+        trades.length === 0 ? (
+          <div style={{ textAlign: "center", padding: "48px 20px", color: C.muted }}>
+            <div style={{ fontSize: 34, marginBottom: 10 }}>◈</div>
+            <p style={{ margin: 0, fontSize: 14.5 }}>Belum ada trade di akun ini. Mulai dari tab <b style={{ color: C.gold }}>Catat</b>.</p>
+          </div>
+        ) : (
+          <React.Fragment>
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 12, gap: 8, flexWrap: "wrap" }}>
+              <Chips options={["semua", "profit", "loss", "scalp", "intraday"]} value={filter} onChange={setFilter} />
+              <button onClick={exportCsv} style={{ padding: "7px 13px", borderRadius: 20, fontSize: 12.5, fontWeight: 600, fontFamily: "inherit", border: `1.5px solid ${C.blue}`, background: "transparent", color: C.blue }}>↓ CSV</button>
+            </div>
+            {filtered.map((t) => (
+              <div key={t.id} style={{ background: C.panel, border: `1px solid ${C.line}`, borderLeft: `3px solid ${t.pnl >= 0 ? C.profit : C.loss}`, borderRadius: 12, padding: "12px 14px", marginBottom: 10 }}>
+                <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+                  <Mono size={12} color={C.muted} weight={400}>
+                    {t.date}
+                    {t.direction && <span style={{ marginLeft: 8, color: t.direction === "buy" ? C.profit : C.loss, fontWeight: 600 }}>{t.direction.toUpperCase()}</span>}
+                  </Mono>
+                  <Mono size={16} color={t.pnl >= 0 ? C.profit : C.loss}>{t.pnl >= 0 ? "+" : ""}{fmtUsd(t.pnl)}</Mono>
+                </div>
+                <div style={{ display: "flex", gap: 6, marginTop: 6, flexWrap: "wrap", alignItems: "center" }}>
+                  {[t.timeframe && (TIMEFRAMES.find((x) => x.k === t.timeframe) || {}).label, t.session, t.setup].filter(Boolean).map((tag) => (
+                    <span key={tag} style={{ fontSize: 10.5, padding: "3px 9px", borderRadius: 12, background: C.panel2, color: C.muted, border: `1px solid ${C.line}` }}>{tag}</span>
+                  ))}
+                  {t.hasImg && (
+                    <button onClick={() => openImg(t.id)} style={{ fontSize: 10.5, padding: "3px 9px", borderRadius: 12, background: `${C.blue}18`, color: C.blue, border: `1px solid ${C.blue}55`, fontFamily: "inherit", fontWeight: 600 }}>📷 Chart</button>
+                  )}
+                </div>
+                {t.type === "layer" && (
+                  <Mono size={12} color={C.muted} weight={400}>
+                    <div style={{ marginTop: 6 }}>{t.layers.length} layer · {fmt2(t.totalLot)} lot · avg {fmt2(t.avgEntry)} → {fmt2(t.exit)}</div>
+                  </Mono>
+                )}
+                {t.note && <div style={{ fontSize: 13, opacity: 0.75, marginTop: 6, lineHeight: 1.45 }}>{t.note}</div>}
+                <button onClick={() => del(t)} style={{ marginTop: 8, background: "transparent", border: "none", color: C.muted, fontSize: 12, padding: 0, textDecoration: "underline", fontFamily: "inherit" }}>Hapus</button>
+              </div>
+            ))}
+          </React.Fragment>
+        )
+      ) : (
+        trades.length === 0 ? (
+          <div style={{ textAlign: "center", padding: "48px 20px", color: C.muted }}><p style={{ fontSize: 14.5 }}>Statistik muncul setelah ada trade tercatat.</p></div>
+        ) : (
+          <React.Fragment>
+            <Card><Label>Kurva ekuitas</Label><EquityCurve data={stats.curve} /></Card>
+            <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10, marginBottom: 12 }}>
+              {[
+                { label: "Profit factor", val: stats.profitFactor === Infinity ? "∞" : stats.profitFactor.toFixed(2), col: stats.profitFactor >= 1.5 ? C.profit : stats.profitFactor >= 1 ? C.gold : C.loss },
+                { label: "Max drawdown", val: fmtUsd(-stats.maxDD), col: C.loss },
+                { label: "Trade terbaik", val: fmtUsd(stats.best), col: C.profit },
+                { label: "Trade terburuk", val: fmtUsd(stats.worst), col: C.loss },
+                { label: "Rata-rata win", val: fmtUsd(stats.avgWin), col: C.profit },
+                { label: "Rata-rata loss", val: fmtUsd(stats.avgLoss), col: C.loss },
+              ].map((s) => (
+                <div key={s.label} style={{ background: C.panel, border: `1px solid ${C.line}`, borderRadius: 12, padding: "12px 14px" }}>
+                  <div style={{ fontSize: 10.5, color: C.muted, letterSpacing: 1.2, textTransform: "uppercase" }}>{s.label}</div>
+                  <Mono size={16} color={s.col}>{s.val}</Mono>
+                </div>
+              ))}
+            </div>
+            {Object.keys(stats.bySession).length > 0 && (
+              <Card><Label>Performa per sesi</Label>{Object.entries(stats.bySession).map(([k, v]) => <BreakdownRow key={k} name={k} v={v} />)}</Card>
+            )}
+            {Object.keys(stats.bySetup).length > 0 && (
+              <Card><Label>Performa per setup</Label>{Object.entries(stats.bySetup).sort((a, b) => b[1].pnl - a[1].pnl).map(([k, v]) => <BreakdownRow key={k} name={k} v={v} />)}</Card>
+            )}
+          </React.Fragment>
+        )
+      )}
+    </div>
+  );
+}
+
+function BreakdownRow({ name, v }) {
+  return (
+    <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", padding: "7px 0", borderBottom: `1px solid ${C.line}` }}>
+      <div style={{ fontSize: 13.5 }}>{name} <span style={{ color: C.muted, fontSize: 12 }}>· {v.n} trade · {((v.w / v.n) * 100).toFixed(0)}% win</span></div>
+      <Mono size={14} color={v.pnl >= 0 ? C.profit : C.loss}>{v.pnl >= 0 ? "+" : ""}{fmtUsd(v.pnl)}</Mono>
+    </div>
+  );
+}
+
+// ═══ Tab: Keuangan ═══════════════════════════════════════════
+function TabKeuangan({ finance, persistFinance, inputStyle, showToast, kurs, persistKurs, kursFromNews }) {
+  const [type, setType] = useState("keluar");
+  const [amount, setAmount] = useState("");
+  const [cat, setCat] = useState("");
+  const [note, setNote] = useState("");
+  const [date, setDate] = useState(localToday());
+  const [usd, setUsd] = useState("");
+  const [idr, setIdr] = useState("");
+  const [kursEdit, setKursEdit] = useState("");
+
+  const cats = type === "masuk" ? FIN_CATS_IN : FIN_CATS_OUT;
+
+  const monthTx = finance.filter((t) => t.date && t.date.startsWith(thisMonth()));
+  const monthIn = monthTx.filter((t) => t.type === "masuk").reduce((s, t) => s + t.jumlah, 0);
+  const monthOut = monthTx.filter((t) => t.type === "keluar").reduce((s, t) => s + t.jumlah, 0);
+  const saldo = finance.reduce((s, t) => s + (t.type === "masuk" ? t.jumlah : -t.jumlah), 0);
+
+  const add = () => {
+    const v = parseFloat(amount);
+    if (!v || v <= 0) { showToast("Masukkan nominal yang valid"); return; }
+    const t = { id: Date.now().toString(36), date, type, kategori: cat || "Lainnya", jumlah: v, catatan: note.trim() };
+    persistFinance([t, ...finance]);
+    setAmount(""); setNote(""); setCat("");
+    showToast(`${type === "masuk" ? "Pemasukan" : "Pengeluaran"} tercatat`);
+  };
+
+  const onUsd = (v) => { setUsd(v); const n = parseFloat(v); setIdr(n > 0 ? String(Math.round(n * kurs)) : ""); };
+  const onIdr = (v) => { setIdr(v); const n = parseFloat(v); setUsd(n > 0 ? (n / kurs).toFixed(2) : ""); };
+
+  return (
+    <div className="fadeUp">
+      <div style={{ borderRadius: 20, padding: "18px 16px", marginBottom: 12, background: `linear-gradient(150deg, #101c16 0%, ${C.panel} 55%)`, border: `1px solid ${C.profit}33` }}>
+        <div style={{ fontSize: 10.5, color: C.muted, letterSpacing: 1.8, textTransform: "uppercase" }}>Saldo keuangan pribadi</div>
+        <Mono size={30} color={saldo >= 0 ? C.profit : C.loss}>{fmtIdr(saldo)}</Mono>
+        <div style={{ display: "flex", gap: 0, marginTop: 12, borderTop: `1px solid ${C.line}`, paddingTop: 10 }}>
+          <div style={{ flex: 1 }}>
+            <div style={{ fontSize: 10, color: C.muted, letterSpacing: 1, textTransform: "uppercase" }}>Masuk bulan ini</div>
+            <Mono size={14} color={C.profit}>{fmtIdr(monthIn)}</Mono>
+          </div>
+          <div style={{ flex: 1, textAlign: "right" }}>
+            <div style={{ fontSize: 10, color: C.muted, letterSpacing: 1, textTransform: "uppercase" }}>Keluar bulan ini</div>
+            <Mono size={14} color={C.loss}>{fmtIdr(monthOut)}</Mono>
+          </div>
+        </div>
+      </div>
+
+      <SectionTitle>Konversi USD ↔ IDR</SectionTitle>
+      <Card>
+        <div style={{ display: "flex", gap: 8, alignItems: "center", marginBottom: 10 }}>
+          <div style={{ flex: 1 }}>
+            <div style={{ fontSize: 10.5, color: C.muted, marginBottom: 4 }}>USD ($)</div>
+            <input type="number" inputMode="decimal" placeholder="100" value={usd} onChange={(e) => onUsd(e.target.value)} style={inputStyle} />
+          </div>
+          <span style={{ color: C.gold, fontSize: 16, marginTop: 16 }}>⇄</span>
+          <div style={{ flex: 1.3 }}>
+            <div style={{ fontSize: 10.5, color: C.muted, marginBottom: 4 }}>IDR (Rp)</div>
+            <input type="number" inputMode="decimal" placeholder="1650000" value={idr} onChange={(e) => onIdr(e.target.value)} style={inputStyle} />
+          </div>
+        </div>
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", flexWrap: "wrap", gap: 8 }}>
+          <Mono size={12} color={C.muted} weight={400}>Kurs: 1 USD = {fmtIdr(kurs)}{kursFromNews && !kursEdit ? " (live)" : ""}</Mono>
+          <div style={{ display: "flex", gap: 6 }}>
+            <input type="number" inputMode="decimal" placeholder="Kurs manual" value={kursEdit} onChange={(e) => setKursEdit(e.target.value)} style={{ ...inputStyle, width: 120, padding: "7px 10px", fontSize: 13 }} />
+            <button onClick={() => { const v = parseFloat(kursEdit); if (v > 1000) { persistKurs(v); showToast("Kurs manual disimpan"); } }} style={{ padding: "0 12px", borderRadius: 8, background: C.panel2, color: C.gold, fontWeight: 700, fontFamily: "inherit", fontSize: 13, border: `1px solid ${C.line}` }}>Set</button>
+          </div>
+        </div>
+      </Card>
+
+      <SectionTitle>Catat Transaksi</SectionTitle>
+      <div style={{ display: "flex", gap: 8, marginBottom: 12 }}>
+        {[{ k: "masuk", label: "PEMASUKAN", col: C.profit }, { k: "keluar", label: "PENGELUARAN", col: C.loss }].map((d) => (
+          <button key={d.k} onClick={() => { setType(d.k); setCat(""); }} style={{ flex: 1, padding: "11px 0", borderRadius: 10, fontFamily: "'JetBrains Mono', monospace", fontWeight: 600, fontSize: 12, letterSpacing: 1.5, border: `1.5px solid ${type === d.k ? d.col : C.line}`, background: type === d.k ? `${d.col}18` : "transparent", color: type === d.k ? d.col : C.muted }}>{d.label}</button>
+        ))}
+      </div>
+      <div style={{ display: "flex", gap: 8, marginBottom: 10 }}>
+        <input type="number" inputMode="decimal" placeholder="Nominal (Rp)" value={amount} onChange={(e) => setAmount(e.target.value)} style={{ ...inputStyle, flex: 1.4 }} />
+        <input type="date" value={date} onChange={(e) => setDate(e.target.value)} style={{ ...inputStyle, flex: 1 }} />
+      </div>
+      <div style={{ marginBottom: 10 }}>
+        <Chips options={cats} value={cat} onChange={(v) => setCat(v === cat ? "" : v)} colorFn={() => (type === "masuk" ? C.profit : C.loss)} />
+      </div>
+      <input placeholder="Catatan (opsional)" value={note} onChange={(e) => setNote(e.target.value)} style={{ ...inputStyle, fontFamily: "inherit", marginBottom: 12 }} />
+      <GoldBtn onClick={add}>Simpan transaksi</GoldBtn>
+
+      {finance.length > 0 && (
+        <React.Fragment>
+          <SectionTitle>Riwayat Transaksi</SectionTitle>
+          {finance.slice(0, 30).map((t) => (
+            <div key={t.id} style={{ background: C.panel, border: `1px solid ${C.line}`, borderLeft: `3px solid ${t.type === "masuk" ? C.profit : C.loss}`, borderRadius: 12, padding: "10px 13px", marginBottom: 8, display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+              <div>
+                <div style={{ fontSize: 13.5, fontWeight: 600 }}>{t.kategori}</div>
+                <Mono size={11} color={C.muted} weight={400}>{t.date}{t.catatan ? ` · ${t.catatan}` : ""}</Mono>
+              </div>
+              <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+                <Mono size={14} color={t.type === "masuk" ? C.profit : C.loss}>{t.type === "masuk" ? "+" : "−"}{fmtIdr(t.jumlah)}</Mono>
+                <button onClick={() => persistFinance(finance.filter((x) => x.id !== t.id))} style={{ background: "transparent", border: "none", color: C.muted, fontSize: 15, padding: 0 }}>×</button>
+              </div>
+            </div>
+          ))}
+        </React.Fragment>
+      )}
+    </div>
+  );
+}
+
+// ═══ Tab: Alat (API key + AI + Todo + Disiplin + Kalkulator) ═
+function TabAlat({ inputStyle, settings, persistSettings, showToast, todos, persistTodos, stats, trades, hasKey, setHasKey, onKeySaved }) {
+  const [balance, setBalance] = useState("");
+  const [riskPct, setRiskPct] = useState("1");
+  const [slMove, setSlMove] = useState("");
+  const [target, setTarget] = useState(settings.dailyTarget || "");
+  const [limit, setLimit] = useState(settings.dailyLossLimit || "");
+  const [newItem, setNewItem] = useState("");
+  const [todoText, setTodoText] = useState("");
+  const [todoCat, setTodoCat] = useState("Analisa");
+  const [keyInput, setKeyInput] = useState("");
+  const [aiLoading, setAiLoading] = useState(null);
+  const [aiResult, setAiResult] = useState(null);
+  const [aiError, setAiError] = useState(null);
+
+  const b = parseFloat(balance), r = parseFloat(riskPct), sl = parseFloat(slMove);
+  const riskUsd = b > 0 && r > 0 ? b * (r / 100) : null;
+  const lot = riskUsd && sl > 0 ? riskUsd / (sl * CONTRACT_SIZE) : null;
+
+  const wibH = (new Date().getUTCHours() + 7) % 24;
+  const sessions = [
+    { name: "Asia (Tokyo)", range: "07:00 – 16:00", on: wibH >= 7 && wibH < 16, tip: "Range sempit, cocok scalping range & persiapan level" },
+    { name: "London", range: "14:00 – 23:00", on: wibH >= 14 && wibH < 23, tip: "Volatilitas naik — breakout London open sering jadi arah harian" },
+    { name: "New York", range: "19:00 – 04:00", on: wibH >= 19 || wibH < 4, tip: "Overlap London-NY (19:00–23:00) = jam paling likuid buat gold" },
+  ];
+
+  const saveDiscipline = () => {
+    persistSettings({ ...settings, dailyTarget: parseFloat(target) || 0, dailyLossLimit: parseFloat(limit) || 0 });
+    showToast("Pengaturan disiplin tersimpan");
+  };
+  const items = settings.checklistItems || DEFAULT_CHECKLIST;
+
+  const saveKey = () => {
+    const k = keyInput.trim();
+    if (!k.startsWith("sk-ant-")) { showToast("Format API key tidak valid (harus sk-ant-…)"); return; }
+    localStorage.setItem(KEY_API, k);
+    setHasKey(true); setKeyInput("");
+    showToast("API key tersimpan — fitur AI aktif!");
+    onKeySaved();
+  };
+  const removeKey = () => {
+    localStorage.removeItem(KEY_API);
+    setHasKey(false);
+    showToast("API key dihapus");
+  };
+
+  const addTodo = () => {
+    if (!todoText.trim()) return;
+    persistTodos([{ id: Date.now().toString(36), text: todoText.trim(), cat: todoCat, done: false }, ...todos]);
+    setTodoText("");
+  };
+
+  const requireKey = () => { setAiError("Isi API key dulu di kartu 'Koneksi AI' di atas untuk pakai fitur ini."); };
+
+  const analyzeMarket = async () => {
+    if (!getApiKey()) { requireKey(); return; }
+    setAiLoading("market"); setAiError(null); setAiResult(null);
+    try {
+      const text = await callClaude([{
+        role: "user",
+        content: `Cari harga XAUUSD terkini dan berita penggeraknya. Buat analisa trading Bahasa Indonesia santai:
+
+📊 KONDISI MARKET (2-3 kalimat)
+🎯 LEVEL KUNCI (resistance & support, 2-3 level masing-masing)
+⚡ RENCANA SCALPING M5-M15 (zona entry, bias, target 2-5 poin, kapan hindari)
+📈 RENCANA INTRADAY H1-H4 (skenario bullish & bearish: trigger + target)
+⚠️ RISIKO HARI INI (event & jam rawan WIB)
+
+Maksimal 300 kata, actionable.`,
+      }], true);
+      setAiResult({ title: "Analisa Market — Scalping & Intraday", text });
+    } catch (e) { setAiError(e.message === "NO_KEY" ? "Isi API key dulu di kartu 'Koneksi AI'." : "Gagal mengambil analisa — cek API key/koneksi lalu coba lagi."); }
+    setAiLoading(null);
+  };
+
+  const coachReview = async () => {
+    if (!getApiKey()) { requireKey(); return; }
+    if (trades.length < 3) { setAiError("Minimal 3 trade dulu biar review-nya berarti."); return; }
+    setAiLoading("coach"); setAiError(null); setAiResult(null);
+    const summary = {
+      totalTrade: trades.length, totalPnl: stats.total.toFixed(2), winRate: stats.winRate.toFixed(1) + "%",
+      profitFactor: stats.profitFactor === Infinity ? "inf" : stats.profitFactor.toFixed(2),
+      avgWin: stats.avgWin.toFixed(2), avgLoss: stats.avgLoss.toFixed(2), maxDrawdown: stats.maxDD.toFixed(2),
+      perSesi: stats.bySession, perSetup: stats.bySetup,
+      tradeTerakhir: trades.slice(0, 10).map((t) => ({ tanggal: t.date, arah: t.direction, tf: t.timeframe, sesi: t.session, setup: t.setup, pnl: t.pnl.toFixed(2) })),
+    };
+    try {
+      const text = await callClaude([{
+        role: "user",
+        content: `Kamu trading coach XAUUSD berpengalaman. Data jurnal saya: ${JSON.stringify(summary)}
+
+Review Bahasa Indonesia santai tapi jujur:
+💪 YANG SUDAH BAGUS (2-3 poin dari data)
+🔍 POLA YANG PERLU DIWASPADAI (2-3 poin)
+🎯 3 ACTION ITEM MINGGU INI (konkret)
+
+Maksimal 250 kata, pakai angka dari data saya.`,
+      }], false);
+      setAiResult({ title: "Review dari AI Coach", text });
+    } catch (e) { setAiError(e.message === "NO_KEY" ? "Isi API key dulu di kartu 'Koneksi AI'." : "Gagal mengambil review — coba lagi."); }
+    setAiLoading(null);
+  };
+
+  return (
+    <div className="fadeUp">
+      {/* Koneksi AI */}
+      <SectionTitle>Koneksi AI</SectionTitle>
+      <Card style={{ borderColor: hasKey ? `${C.profit}55` : `${C.gold}44` }}>
+        {hasKey ? (
+          <React.Fragment>
+            <div style={{ fontSize: 13.5, lineHeight: 1.55, marginBottom: 10 }}>
+              ✅ <b style={{ color: C.profit }}>AI aktif.</b> Berita AI, bias, kalender news + pengingat, analisa, dan coach semuanya jalan.
+            </div>
+            <button onClick={removeKey} style={{ background: "transparent", border: "none", color: C.muted, fontSize: 12.5, textDecoration: "underline", fontFamily: "inherit", padding: 0 }}>Hapus API key</button>
+          </React.Fragment>
+        ) : (
+          <React.Fragment>
+            <p style={{ fontSize: 13, color: C.muted, lineHeight: 1.6, margin: "0 0 10px" }}>
+              Fitur AI (berita, bias, kalender + pengingat, analisa, coach) butuh <b style={{ color: C.gold }}>API key Anthropic</b> milikmu. Buat di <b>console.anthropic.com</b> → API Keys. Key hanya tersimpan di HP kamu (localStorage), tidak dikirim ke mana-mana selain langsung ke Anthropic. Jangan isi di HP orang lain.
+            </p>
+            <div style={{ display: "flex", gap: 8 }}>
+              <input type="password" placeholder="sk-ant-…" value={keyInput} onChange={(e) => setKeyInput(e.target.value)} style={{ ...inputStyle, flex: 1 }} />
+              <button onClick={saveKey} style={{ padding: "0 16px", borderRadius: 10, border: "none", background: C.gold, color: "#1a1508", fontWeight: 700, fontFamily: "inherit" }}>Simpan</button>
+            </div>
+            <p style={{ fontSize: 11.5, color: C.muted, lineHeight: 1.5, margin: "8px 0 0" }}>
+              Tanpa key: harga gold & kurs tetap live gratis, jurnal & semua alat tetap jalan penuh.
+            </p>
+          </React.Fragment>
+        )}
+      </Card>
+
+      {/* AI */}
+      <SectionTitle>AI Assistant</SectionTitle>
+      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10, marginBottom: 12 }}>
+        <button onClick={analyzeMarket} disabled={aiLoading !== null} style={{ padding: "14px 8px", borderRadius: 14, border: `1px solid ${C.gold}44`, background: `linear-gradient(135deg, #1c1a12, ${C.panel})`, color: C.text, fontFamily: "inherit", opacity: hasKey ? 1 : 0.6 }}>
+          <div style={{ fontSize: 20 }}>⚡</div>
+          <div style={{ fontSize: 12.5, fontWeight: 700, marginTop: 3 }}>{aiLoading === "market" ? "Menganalisa…" : "Analisa Scalping & Intraday"}</div>
+        </button>
+        <button onClick={coachReview} disabled={aiLoading !== null} style={{ padding: "14px 8px", borderRadius: 14, border: `1px solid ${C.blue}44`, background: `linear-gradient(135deg, #101620, ${C.panel})`, color: C.text, fontFamily: "inherit", opacity: hasKey ? 1 : 0.6 }}>
+          <div style={{ fontSize: 20 }}>🧠</div>
+          <div style={{ fontSize: 12.5, fontWeight: 700, marginTop: 3 }}>{aiLoading === "coach" ? "Meninjau…" : "AI Coach Review"}</div>
+        </button>
+      </div>
+      {aiError && <Card style={{ borderColor: `${C.loss}66` }}><div style={{ fontSize: 13.5, color: C.loss }}>{aiError}</div></Card>}
+      {aiResult && (
+        <Card style={{ borderColor: `${C.gold}55` }}>
+          <div style={{ fontSize: 14, fontWeight: 700, color: C.gold, marginBottom: 10 }}>{aiResult.title}</div>
+          <div style={{ fontSize: 13.5, lineHeight: 1.65, whiteSpace: "pre-wrap" }}>{aiResult.text}</div>
+          <p style={{ fontSize: 11, color: C.muted, marginTop: 12, marginBottom: 0 }}>Analisa AI bersifat informasi, bukan saran finansial.</p>
+        </Card>
+      )}
+
+      {/* To-do */}
+      <SectionTitle>To-Do Trading</SectionTitle>
+      <Card>
+        <div style={{ display: "flex", gap: 8, marginBottom: 8 }}>
+          <input placeholder="Mis. Tandai level H4 sebelum London open" value={todoText} onChange={(e) => setTodoText(e.target.value)} style={{ ...inputStyle, flex: 1, fontFamily: "inherit", fontSize: 14 }} />
+          <button onClick={addTodo} style={{ padding: "0 16px", borderRadius: 10, border: "none", background: C.gold, color: "#1a1508", fontWeight: 700, fontFamily: "inherit" }}>+</button>
+        </div>
+        <Chips options={TODO_CATS} value={todoCat} onChange={setTodoCat} colorFn={() => C.blue} />
+        <div style={{ height: 10 }} />
+        {todos.length === 0 && <p style={{ fontSize: 13, color: C.muted, margin: 0 }}>Belum ada tugas. Contoh: "Review 3 trade terakhir", "Cek kalender NFP".</p>}
+        {todos.map((t) => (
+          <div key={t.id} style={{ display: "flex", alignItems: "center", gap: 10, padding: "7px 0", borderBottom: `1px solid ${C.line}` }}>
+            <button onClick={() => persistTodos(todos.map((x) => x.id === t.id ? { ...x, done: !x.done } : x))} style={{ width: 20, height: 20, borderRadius: 6, flexShrink: 0, border: `1.5px solid ${t.done ? C.profit : C.line}`, background: t.done ? `${C.profit}22` : "transparent", color: C.profit, fontSize: 13, display: "flex", alignItems: "center", justifyContent: "center", fontWeight: 700 }}>{t.done ? "✓" : ""}</button>
+            <span style={{ flex: 1, fontSize: 13.5, textDecoration: t.done ? "line-through" : "none", opacity: t.done ? 0.5 : 1 }}>{t.text}</span>
+            <span style={{ fontSize: 10, color: C.muted }}>{t.cat}</span>
+            <button onClick={() => persistTodos(todos.filter((x) => x.id !== t.id))} style={{ background: "transparent", border: "none", color: C.muted, fontSize: 15, padding: 0 }}>×</button>
+          </div>
+        ))}
+      </Card>
+
+      {/* Disiplin */}
+      <SectionTitle>Disiplin Harian</SectionTitle>
+      <Card style={{ borderColor: `${C.gold}44` }}>
+        <div style={{ display: "flex", gap: 8, marginBottom: 10 }}>
+          <input type="number" inputMode="decimal" placeholder="Target profit/hari ($)" value={target} onChange={(e) => setTarget(e.target.value)} style={{ ...inputStyle, flex: 1 }} />
+          <input type="number" inputMode="decimal" placeholder="Batas loss/hari ($)" value={limit} onChange={(e) => setLimit(e.target.value)} style={{ ...inputStyle, flex: 1 }} />
+        </div>
+        <GoldBtn onClick={saveDiscipline} small>Simpan pengaturan</GoldBtn>
+        <p style={{ fontSize: 12, color: C.muted, lineHeight: 1.5, marginBottom: 0 }}>Loss menyentuh batas → form entry terkunci otomatis. Kosongkan / 0 untuk nonaktif.</p>
+      </Card>
+
+      <Card>
+        <Label right={
+          <button onClick={() => persistSettings({ ...settings, checklistOn: !settings.checklistOn })} style={{ padding: "5px 12px", borderRadius: 16, fontSize: 12, fontWeight: 600, fontFamily: "inherit", border: `1.5px solid ${settings.checklistOn ? C.profit : C.line}`, background: settings.checklistOn ? `${C.profit}18` : "transparent", color: settings.checklistOn ? C.profit : C.muted }}>
+            {settings.checklistOn ? "Wajib ✓" : "Nonaktif"}
+          </button>
+        }>Checklist pre-trade</Label>
+        {items.map((item, i) => (
+          <div key={i} style={{ display: "flex", justifyContent: "space-between", alignItems: "center", padding: "6px 0", borderBottom: `1px solid ${C.line}` }}>
+            <span style={{ fontSize: 13, lineHeight: 1.4, flex: 1 }}>{item}</span>
+            <button onClick={() => persistSettings({ ...settings, checklistItems: items.filter((_, j) => j !== i) })} style={{ background: "transparent", border: "none", color: C.muted, fontSize: 16, padding: "0 4px" }}>×</button>
+          </div>
+        ))}
+        <div style={{ display: "flex", gap: 8, marginTop: 10 }}>
+          <input placeholder="Tambah item checklist…" value={newItem} onChange={(e) => setNewItem(e.target.value)} style={{ ...inputStyle, flex: 1, fontFamily: "inherit", fontSize: 14 }} />
+          <button onClick={() => { if (newItem.trim()) { persistSettings({ ...settings, checklistItems: [...items, newItem.trim()] }); setNewItem(""); } }} style={{ padding: "0 16px", borderRadius: 10, border: "none", background: C.gold, color: "#1a1508", fontWeight: 700, fontFamily: "inherit" }}>+</button>
+        </div>
+      </Card>
+
+      {/* Kalkulator */}
+      <SectionTitle>Kalkulator Lot</SectionTitle>
+      <Card>
+        <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+          <input type="number" inputMode="decimal" placeholder="Balance akun ($)" value={balance} onChange={(e) => setBalance(e.target.value)} style={inputStyle} />
+          <div style={{ display: "flex", gap: 8 }}>
+            <input type="number" inputMode="decimal" placeholder="Risk %" value={riskPct} onChange={(e) => setRiskPct(e.target.value)} style={{ ...inputStyle, flex: 1 }} />
+            <input type="number" inputMode="decimal" placeholder="Jarak SL ($, mis. 5)" value={slMove} onChange={(e) => setSlMove(e.target.value)} style={{ ...inputStyle, flex: 1.5 }} />
+          </div>
+        </div>
+        {lot !== null && (
+          <div style={{ marginTop: 12, padding: "13px 14px", borderRadius: 12, background: `${C.gold}10`, border: `1px solid ${C.gold}44`, display: "flex", justifyContent: "space-between" }}>
+            <div><div style={{ fontSize: 10.5, color: C.muted, letterSpacing: 1.2, textTransform: "uppercase" }}>Lot maksimal</div><Mono size={20} color={C.gold}>{lot.toFixed(2)}</Mono></div>
+            <div style={{ textAlign: "right" }}><div style={{ fontSize: 10.5, color: C.muted, letterSpacing: 1.2, textTransform: "uppercase" }}>Risk</div><Mono size={20} color={C.loss}>{fmtUsd(riskUsd)}</Mono></div>
+          </div>
+        )}
+        <p style={{ fontSize: 12, color: C.muted, lineHeight: 1.5, marginBottom: 0 }}>SL 5 poin dari entry 4000 → 3995 berarti isi 5. Bisa dibagi ke beberapa layer selama total ≤ lot maksimal.</p>
+      </Card>
+
+      {/* Sesi */}
+      <SectionTitle>Sesi Market (WIB)</SectionTitle>
+      <Card>
+        {sessions.map((s) => (
+          <div key={s.name} style={{ padding: "10px 0", borderBottom: `1px solid ${C.line}` }}>
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+              <span style={{ fontSize: 14, fontWeight: 600, color: s.on ? C.profit : C.text }}>
+                {s.on && <span style={{ display: "inline-block", width: 7, height: 7, borderRadius: 4, background: C.profit, marginRight: 7, animation: "pulse 1.8s infinite" }} />}
+                {s.name}
+              </span>
+              <Mono size={12} color={C.muted} weight={400}>{s.range}</Mono>
+            </div>
+            <div style={{ fontSize: 12.5, color: C.muted, marginTop: 3, lineHeight: 1.45 }}>{s.tip}</div>
+          </div>
+        ))}
+        <div style={{ marginTop: 10 }}>
+          {[["1 lot standar", "100 oz"], ["Nilai $1 pergerakan", "$100 / lot"], ["0.01 lot, gerak $1", "$1"]].map(([k, v]) => (
+            <div key={k} style={{ display: "flex", justifyContent: "space-between", padding: "5px 0", fontSize: 13 }}>
+              <span style={{ color: C.muted }}>{k}</span>
+              <Mono size={13}>{v}</Mono>
+            </div>
+          ))}
+        </div>
+      </Card>
+
+      <p style={{ fontSize: 11, color: C.muted, textAlign: "center", lineHeight: 1.6, margin: "16px 0 8px" }}>
+        Jurnal Emas Pro · Data tersimpan di perangkat ini (localStorage).<br />Bukan saran finansial — selalu pakai manajemen risiko.
+      </p>
+    </div>
+  );
+}
+
+// ═══ Kurva ekuitas ═══════════════════════════════════════════
+function EquityCurve({ data }) {
+  if (data.length < 2) return <p style={{ color: C.muted, fontSize: 13, margin: 0 }}>Butuh minimal 2 trade untuk menggambar kurva.</p>;
+  const W = 320, H = 110;
+  const min = Math.min(...data, 0), max = Math.max(...data, 0);
+  const range = max - min || 1;
+  const x = (i) => (i / (data.length - 1)) * W;
+  const y = (v) => H - ((v - min) / range) * H;
+  const path = data.map((v, i) => `${i === 0 ? "M" : "L"}${x(i).toFixed(1)},${y(v).toFixed(1)}`).join(" ");
+  const last = data[data.length - 1];
+  return (
+    <svg viewBox={`0 0 ${W} ${H + 8}`} style={{ width: "100%", height: "auto", display: "block" }}>
+      <defs>
+        <linearGradient id="eqFill" x1="0" y1="0" x2="0" y2="1">
+          <stop offset="0%" stopColor={last >= 0 ? C.profit : C.loss} stopOpacity="0.22" />
+          <stop offset="100%" stopColor={last >= 0 ? C.profit : C.loss} stopOpacity="0" />
+        </linearGradient>
+      </defs>
+      <line x1="0" x2={W} y1={y(0)} y2={y(0)} stroke={C.line} strokeDasharray="3 4" />
+      <path d={`${path} L${W},${H + 8} L0,${H + 8} Z`} fill="url(#eqFill)" />
+      <path d={path} fill="none" stroke={last >= 0 ? C.profit : C.loss} strokeWidth="2.2" strokeLinejoin="round" />
+      <circle cx={x(data.length - 1)} cy={y(last)} r="3.5" fill={C.gold} />
+    </svg>
+  );
+}
+
+ReactDOM.createRoot(document.getElementById("root")).render(<JurnalGoldPro />);
+</script>
+</body>
+</html>

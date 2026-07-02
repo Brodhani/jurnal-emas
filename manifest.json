@@ -1,0 +1,15 @@
+{
+  "name": "Jurnal Emas Pro — XAUUSD",
+  "short_name": "Jurnal Emas",
+  "description": "Jurnal trading XAUUSD: kalkulator layer, auto-stop harian, berita gold, keuangan pribadi, dan AI coach.",
+  "start_url": "./index.html",
+  "scope": "./",
+  "display": "standalone",
+  "orientation": "portrait",
+  "background_color": "#0A0B0F",
+  "theme_color": "#0A0B0F",
+  "icons": [
+    { "src": "icon-192.png", "sizes": "192x192", "type": "image/png", "purpose": "any maskable" },
+    { "src": "icon-512.png", "sizes": "512x512", "type": "image/png", "purpose": "any maskable" }
+  ]
+}
