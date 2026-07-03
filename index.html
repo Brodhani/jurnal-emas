@@ -147,7 +147,7 @@ function pushPriceSample(price) {
   const hist = loadPriceHist();
   const now = Date.now();
   if (hist.length && now - hist[hist.length - 1].ts < 5 * 60 * 1000) return hist; // sample tiap >=5 menit
-  const next = [...hist, { ts: now, price }].filter((s) => s.ts >= now - 6 * 60 * 60 * 1000); // simpan 6 jam
+  const next = [...hist, { ts: now, price }].filter((s) => s.ts >= now - 24 * 60 * 60 * 1000); // simpan 24 jam
   try { localStorage.setItem(KEY_PRICE_HIST, JSON.stringify(next)); } catch (e) {}
   return next;
 }
@@ -614,7 +614,7 @@ Maksimal 4 baris NEWS dan 4 baris EVENT. Jika tidak ada event hari ini, tidak pe
       )}
 
       <main style={{ padding: "0 18px" }}>
-        {tab === "dashboard" && <TabDashboard stats={stats} settings={settings} news={news} newsTs={newsTs} newsLoading={newsLoading} newsError={newsError} onRefresh={() => fetchNews(true)} todos={todos} trades={trades} goTab={setTab} lossLimitHit={lossLimitHit} targetHit={targetHit} hasKey={hasKey} newsCapable={hasNewsCapableKey()} momentum={momentum} momentumNote={momentumNote} journalInsight={journalInsight} />}
+        {tab === "dashboard" && <TabDashboard stats={stats} settings={settings} news={news} newsTs={newsTs} newsLoading={newsLoading} newsError={newsError} onRefresh={() => fetchNews(true)} todos={todos} trades={trades} goTab={setTab} lossLimitHit={lossLimitHit} targetHit={targetHit} hasKey={hasKey} newsCapable={hasNewsCapableKey()} momentum={momentum} momentumNote={momentumNote} journalInsight={journalInsight} priceHist={priceHist} />}
         {tab === "catat" && <TabCatat trades={trades} persistTrades={persistTrades} showToast={showToast} inputStyle={inputStyle} settings={settings} lossLimitHit={lossLimitHit} targetHit={targetHit} todayPnl={stats.todayPnl} />}
         {tab === "jurnal" && <TabJurnal trades={trades} persistTrades={persistTrades} loaded={loaded} exportCsv={exportCsv} showToast={showToast} setViewImg={setViewImg} stats={stats} />}
         {tab === "keuangan" && <TabKeuangan finance={finance} persistFinance={persistFinance} inputStyle={inputStyle} showToast={showToast} kurs={kurs} persistKurs={persistKurs} kursFromNews={news && news.kurs} />}
@@ -682,7 +682,7 @@ function TopBar({ activeAccount, onAccounts, news }) {
 }
 
 // ═══ Tab: Dashboard ══════════════════════════════════════════
-function TabDashboard({ stats, settings, news, newsTs, newsLoading, newsError, onRefresh, todos, trades, goTab, lossLimitHit, targetHit, hasKey, newsCapable, momentum, momentumNote, journalInsight }) {
+function TabDashboard({ stats, settings, news, newsTs, newsLoading, newsError, onRefresh, todos, trades, goTab, lossLimitHit, targetHit, hasKey, newsCapable, momentum, momentumNote, journalInsight, priceHist }) {
   const hasTarget = settings.dailyTarget > 0;
   const hasLimit = settings.dailyLossLimit > 0;
   const progressPct = hasTarget && stats.todayPnl > 0 ? Math.min(100, (stats.todayPnl / settings.dailyTarget) * 100)
@@ -754,6 +754,8 @@ function TabDashboard({ stats, settings, news, newsTs, newsLoading, newsError, o
             {newsLoading ? "⟳ Memuat…" : "↻ Refresh"}
           </button>
         </div>
+
+        <div style={{ borderBottom: `1px solid ${C.line}` }}><PriceChart data={priceHist || []} /></div>
 
         {news && news.biasAlasan && (
           <div style={{ padding: "10px 14px", fontSize: 12.5, color: C.text, opacity: 0.85, lineHeight: 1.5, borderBottom: `1px solid ${C.line}` }}>
@@ -1607,6 +1609,41 @@ Maksimal 250 kata, pakai angka dari data saya.`;
       <p style={{ fontSize: 11, color: C.muted, textAlign: "center", lineHeight: 1.6, margin: "16px 0 8px" }}>
         Jurnal Emas Pro · Data tersimpan di perangkat ini (localStorage).<br />Bukan saran finansial — selalu pakai manajemen risiko.
       </p>
+    </div>
+  );
+}
+
+// ═══ Grafik harga live (dari data momentum, tersimpan lokal) ═══
+function PriceChart({ data }) {
+  if (data.length < 2) return <p style={{ color: C.muted, fontSize: 12, margin: "10px 14px", padding: 0 }}>⏳ Grafik muncul setelah data terkumpul (±30 menit).</p>;
+  const W = 320, H = 90;
+  const prices = data.map((d) => d.price);
+  const min = Math.min(...prices), max = Math.max(...prices);
+  const range = (max - min) || 1;
+  const x = (i) => (i / (data.length - 1)) * W;
+  const y = (v) => H - ((v - min) / range) * H;
+  const path = data.map((d, i) => `${i === 0 ? "M" : "L"}${x(i).toFixed(1)},${y(d.price).toFixed(1)}`).join(" ");
+  const first = prices[0], last = prices[prices.length - 1];
+  const up = last >= first;
+  const jamRentang = Math.round((data[data.length - 1].ts - data[0].ts) / (60 * 60 * 1000));
+  return (
+    <div style={{ padding: "10px 14px 12px" }}>
+      <svg viewBox={`0 0 ${W} ${H + 8}`} style={{ width: "100%", height: "auto", display: "block" }}>
+        <defs>
+          <linearGradient id="priceFill" x1="0" y1="0" x2="0" y2="1">
+            <stop offset="0%" stopColor={up ? C.profit : C.loss} stopOpacity="0.2" />
+            <stop offset="100%" stopColor={up ? C.profit : C.loss} stopOpacity="0" />
+          </linearGradient>
+        </defs>
+        <path d={`${path} L${W},${H + 8} L0,${H + 8} Z`} fill="url(#priceFill)" />
+        <path d={path} fill="none" stroke={up ? C.profit : C.loss} strokeWidth="2" strokeLinejoin="round" />
+        <circle cx={x(data.length - 1)} cy={y(last)} r="3.5" fill={C.gold} />
+      </svg>
+      <div style={{ display: "flex", justifyContent: "space-between", marginTop: 4 }}>
+        <Mono size={10} color={C.muted} weight={400}>${min.toFixed(2)}</Mono>
+        <Mono size={10} color={C.muted} weight={400}>{jamRentang > 0 ? `${jamRentang} jam terakhir` : "beberapa menit terakhir"}</Mono>
+        <Mono size={10} color={C.muted} weight={400}>${max.toFixed(2)}</Mono>
+      </div>
     </div>
   );
 }
