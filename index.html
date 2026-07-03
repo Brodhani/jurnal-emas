@@ -149,27 +149,25 @@ async function callClaude(messages, useSearch) {
   const data = await res.json();
   if (data.error) throw new Error(data.error.message || "API error");
   return data.content.map((i) => (i.type === "text" ? i.text : "")).filter(Boolean).join("\n");
+}
 
 // Gemini API untuk fitur AI gratis
 async function callGemini(prompt) {
   const key = getGeminiKey();
   if (!key) throw new Error("NO_KEY");
-  const res = await fetch("https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=" + key, {
+  const res = await fetch("https://generativelanguage.googleapis.com/v1beta/interactions", {
     method: "POST",
-    headers: { "content-type": "application/json" },
-    body: JSON.stringify({
-      contents: [{ parts: [{ text: prompt }] }],
-      generationConfig: { maxOutputTokens: 1000, temperature: 0.7 },
-    }),
+    headers: { "content-type": "application/json", "x-goog-api-key": key },
+    body: JSON.stringify({ model: "gemini-3.5-flash", input: prompt }),
   });
   const data = await res.json();
   if (data.error) throw new Error(data.error.message || "Gemini API error");
-  const candidates = data.candidates || [];
-  if (candidates.length === 0) throw new Error("No response from Gemini");
-  const content = candidates[0].content || {};
-  const parts = content.parts || [];
-  return parts.map((p) => p.text || "").filter(Boolean).join("\n");
-}
+  const steps = data.steps || [];
+  const output = steps.find((s) => s.type === "model_output");
+  const parts = (output && output.content) || [];
+  const text = parts.filter((p) => p.type === "text").map((p) => p.text || "").join("\n");
+  if (!text) throw new Error("No response from Gemini");
+  return text;
 }
 
 // Harga gold live gratis (tanpa API key)
@@ -1229,11 +1227,11 @@ function TabAlat({ inputStyle, settings, persistSettings, showToast, todos, pers
     if (k.startsWith("sk-ant-")) {
       localStorage.setItem(KEY_API, k);
       showToast("✅ API key Anthropic tersimpan!");
-    } else if (k.startsWith("AIza")) {
+    } else if (k.startsWith("AIza") || k.startsWith("AQ.")) {
       localStorage.setItem(KEY_GEMINI, k);
       showToast("✅ API key Google Gemini tersimpan (GRATIS!)");
     } else {
-      showToast("❌ Format tidak valid (sk-ant-… atau AIza…)");
+      showToast("❌ Format tidak valid (sk-ant-… atau AQ./AIza…)");
       return;
     }
     setHasKey(true); setKeyInput("");
@@ -1325,11 +1323,11 @@ Maksimal 250 kata, pakai angka dari data saya.`;
           <React.Fragment>
             <p style={{ fontSize: 13, color: C.muted, lineHeight: 1.6, margin: "0 0 10px" }}>
               Pilih salah satu API key untuk fitur AI (berita, bias, analisa, coach): <br/>
-              <b style={{ color: C.gold }}>1. Google Gemini (GRATIS) </b> → console.cloud.google.com → Create API key (recommended untuk mulai) <br/>
-              <b style={{ color: C.blue }}>2. Anthropic Claude</b> → console.anthropic.com → API Keys (lebih akurat tapi bayar)
+              <b style={{ color: C.gold }}>1. Google Gemini (GRATIS) </b> → aistudio.google.com/app/apikey → Create API key (recommended untuk mulai, key diawali <code>AQ.</code>) <br/>
+              <b style={{ color: C.blue }}>2. Anthropic Claude</b> → console.anthropic.com → API Keys (lebih akurat tapi bayar, key diawali <code>sk-ant-</code>)
             </p>
             <div style={{ display: "flex", gap: 8 }}>
-              <input type="password" placeholder="sk-ant-… atau AIza…" value={keyInput} onChange={(e) => setKeyInput(e.target.value)} style={{ ...inputStyle, flex: 1 }} />
+              <input type="password" placeholder="sk-ant-… atau AQ.…" value={keyInput} onChange={(e) => setKeyInput(e.target.value)} style={{ ...inputStyle, flex: 1 }} />
               <button onClick={saveKey} style={{ padding: "0 16px", borderRadius: 10, border: "none", background: C.gold, color: "#1a1508", fontWeight: 700, fontFamily: "inherit" }}>Simpan</button>
             </div>
             <p style={{ fontSize: 11.5, color: C.muted, lineHeight: 1.5, margin: "8px 0 0" }}>
