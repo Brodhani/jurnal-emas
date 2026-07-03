@@ -442,8 +442,6 @@ Maksimal 4 baris NEWS dan 4 baris EVENT. Jika tidak ada event hari ini, tidak pe
     return () => { clearInterval(qI); clearInterval(nI); clearInterval(tI); };
   }, []);
 
-  useEffect(() => { if (momentum) fetchMomentumNote(false); }, [momentum && momentum.pct]);
-
   const upcomingEvent = useMemo(() => {
     if (!news || !news.kalender) return null;
     let best = null;
@@ -575,6 +573,8 @@ Maksimal 4 baris NEWS dan 4 baris EVENT. Jika tidak ada event hari ini, tidak pe
 
   const momentum = useMemo(() => getMomentum1h(priceHist, news && news.harga ? Number(news.harga) : null), [priceHist, news && news.harga]);
   const journalInsight = useMemo(() => computeJournalInsight(stats, trades.length), [stats, trades.length]);
+
+  useEffect(() => { if (momentum) fetchMomentumNote(false); }, [momentum && momentum.pct]);
 
   const exportCsv = () => {
     const head = "tanggal,arah,timeframe,sesi,setup,total_lot,avg_entry,exit,pnl,catatan";
