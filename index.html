@@ -56,6 +56,7 @@ const KEY_KURS = "xau-kurs-manual";
 const KEY_API = "xau-apikey";
 const KEY_GEMINI = "xau-gemini-key";
 const KEY_DEEPSEEK = "xau-deepseek-key";
+const KEY_GROQ = "xau-groq-key";
 const NEWS_TTL = 15 * 60 * 1000;
 const tradesKey = (a) => `xau-trades:${a}`;
 const settingsKey = (a) => `xau-settings:${a}`;
@@ -132,6 +133,7 @@ function compressImage(file) {
 const getApiKey = () => localStorage.getItem(KEY_API) || "";
 const getGeminiKey = () => localStorage.getItem(KEY_GEMINI) || "";
 const getDeepseekKey = () => localStorage.getItem(KEY_DEEPSEEK) || "";
+const getGroqKey = () => localStorage.getItem(KEY_GROQ) || "";
 
 async function callClaude(messages, useSearch) {
   const key = getApiKey();
@@ -187,6 +189,22 @@ async function callDeepseek(prompt) {
   if (data.error) throw new Error(data.error.message || "DeepSeek API error");
   const text = ((data.choices || [])[0] || {}).message?.content || "";
   if (!text) throw new Error("No response from DeepSeek");
+  return text;
+}
+
+// Groq — gratis selamanya, tanpa kartu kredit, limit harian besar. Sama seperti DeepSeek: tanpa browsing web.
+async function callGroq(prompt) {
+  const key = getGroqKey();
+  if (!key) throw new Error("NO_KEY");
+  const res = await fetch("https://api.groq.com/openai/v1/chat/completions", {
+    method: "POST",
+    headers: { "content-type": "application/json", authorization: "Bearer " + key },
+    body: JSON.stringify({ model: "llama-3.1-8b-instant", messages: [{ role: "user", content: prompt }], max_tokens: 1000 }),
+  });
+  const data = await res.json();
+  if (data.error) throw new Error(data.error.message || "Groq API error");
+  const text = ((data.choices || [])[0] || {}).message?.content || "";
+  if (!text) throw new Error("No response from Groq");
   return text;
 }
 
@@ -283,7 +301,7 @@ function JurnalGoldPro() {
   const [toast, setToast] = useState(null);
   const [showAccounts, setShowAccounts] = useState(false);
   const [viewImg, setViewImg] = useState(null);
-  const [hasKey, setHasKey] = useState(!!getApiKey() || !!getGeminiKey() || !!getDeepseekKey());
+  const [hasKey, setHasKey] = useState(!!getApiKey() || !!getGeminiKey() || !!getDeepseekKey() || !!getGroqKey());
 
   const [news, setNews] = useState(null);
   const [newsTs, setNewsTs] = useState(0);
@@ -1250,11 +1268,14 @@ function TabAlat({ inputStyle, settings, persistSettings, showToast, todos, pers
     } else if (k.startsWith("AIza") || k.startsWith("AQ.")) {
       localStorage.setItem(KEY_GEMINI, k);
       showToast("✅ API key Google Gemini tersimpan (GRATIS!)");
+    } else if (k.startsWith("gsk_")) {
+      localStorage.setItem(KEY_GROQ, k);
+      showToast("✅ API key Groq tersimpan (GRATIS, limit besar!)");
     } else if (k.startsWith("sk-")) {
       localStorage.setItem(KEY_DEEPSEEK, k);
       showToast("✅ API key DeepSeek tersimpan (murah!)");
     } else {
-      showToast("❌ Format tidak valid (sk-ant-…, AQ./AIza…, atau sk-…)");
+      showToast("❌ Format tidak valid (sk-ant-…, AQ./AIza…, gsk_…, atau sk-…)");
       return;
     }
     setHasKey(true); setKeyInput("");
@@ -1264,6 +1285,7 @@ function TabAlat({ inputStyle, settings, persistSettings, showToast, todos, pers
     localStorage.removeItem(KEY_API);
     localStorage.removeItem(KEY_GEMINI);
     localStorage.removeItem(KEY_DEEPSEEK);
+    localStorage.removeItem(KEY_GROQ);
     setHasKey(false);
     showToast("API key dihapus");
   };
@@ -1277,12 +1299,13 @@ function TabAlat({ inputStyle, settings, persistSettings, showToast, todos, pers
   const requireKey = () => { setAiError("Isi API key dulu di kartu 'Koneksi AI' di atas untuk pakai fitur ini."); };
 
   const analyzeMarket = async () => {
-    if (!getApiKey() && !getGeminiKey() && !getDeepseekKey()) { requireKey(); return; }
+    if (!getApiKey() && !getGeminiKey() && !getDeepseekKey() && !getGroqKey()) { requireKey(); return; }
     setAiLoading("market"); setAiError(null); setAiResult(null);
     try {
+      const noInternet = (getDeepseekKey() || getGroqKey()) && !getGeminiKey() && !getApiKey();
       const hargaLive = news && news.harga ? `$${news.harga}` : "tidak tersedia — jangan mengarang angka, sebut saja 'data tidak tersedia'";
       const prompt = `Harga XAUUSD live saat ini (barusan diambil, jadikan acuan utama — JANGAN pakai harga lain dari ingatanmu): ${hargaLive}.
-${getDeepseekKey() ? "Kamu TIDAK punya akses internet, jadi jangan sok tahu soal berita spesifik hari ini — fokus ke analisa teknikal dari harga di atas." : "Cari juga berita/event yang sedang menggerakkan XAUUSD."}
+${noInternet ? "Kamu TIDAK punya akses internet, jadi jangan sok tahu soal berita spesifik hari ini — fokus ke analisa teknikal dari harga di atas." : "Cari juga berita/event yang sedang menggerakkan XAUUSD."}
 
 Buat analisa trading Bahasa Indonesia santai:
 
@@ -1296,6 +1319,8 @@ Maksimal 300 kata, actionable.`;
       let text;
       if (getGeminiKey()) {
         text = await callGemini(prompt, true);
+      } else if (getGroqKey()) {
+        text = await callGroq(prompt);
       } else if (getDeepseekKey()) {
         text = await callDeepseek(prompt);
       } else {
@@ -1307,7 +1332,7 @@ Maksimal 300 kata, actionable.`;
   };
 
   const coachReview = async () => {
-    if (!getApiKey() && !getGeminiKey() && !getDeepseekKey()) { requireKey(); return; }
+    if (!getApiKey() && !getGeminiKey() && !getDeepseekKey() && !getGroqKey()) { requireKey(); return; }
     if (trades.length < 3) { setAiError("Minimal 3 trade dulu biar review-nya berarti."); return; }
     setAiLoading("coach"); setAiError(null); setAiResult(null);
     const summary = {
@@ -1329,6 +1354,8 @@ Maksimal 250 kata, pakai angka dari data saya.`;
       let text;
       if (getGeminiKey()) {
         text = await callGemini(prompt);
+      } else if (getGroqKey()) {
+        text = await callGroq(prompt);
       } else if (getDeepseekKey()) {
         text = await callDeepseek(prompt);
       } else {
@@ -1355,12 +1382,14 @@ Maksimal 250 kata, pakai angka dari data saya.`;
           <React.Fragment>
             <p style={{ fontSize: 13, color: C.muted, lineHeight: 1.6, margin: "0 0 10px" }}>
               Pilih salah satu API key untuk fitur AI (berita, bias, analisa, coach): <br/>
-              <b style={{ color: C.gold }}>1. Google Gemini (GRATIS, ada limit harian) </b> → aistudio.google.com/app/apikey → key diawali <code>AQ.</code> <br/>
-              <b style={{ color: C.blue }}>2. Anthropic Claude</b> → console.anthropic.com → paling akurat tapi bayar, key diawali <code>sk-ant-</code> <br/>
-              <b style={{ color: C.profit }}>3. DeepSeek (murah, ~Rp2/analisa)</b> → platform.deepseek.com/api_keys → key diawali <code>sk-</code>. Catatan: DeepSeek nggak bisa browsing berita live, tapi harga emas tetap akurat (disuntik otomatis dari data live app).
+              <b style={{ color: C.amber }}>1. Groq (GRATIS, limit besar ±1000+/hari, no kartu kredit)</b> → console.groq.com/keys → key diawali <code>gsk_</code>. Rekomendasi utama biar jarang kena limit. <br/>
+              <b style={{ color: C.gold }}>2. Google Gemini (GRATIS, limit ~1500/hari tapi ketat per menit)</b> → aistudio.google.com/app/apikey → key diawali <code>AQ.</code> <br/>
+              <b style={{ color: C.blue }}>3. Anthropic Claude</b> → console.anthropic.com → paling akurat tapi bayar, key diawali <code>sk-ant-</code> <br/>
+              <b style={{ color: C.profit }}>4. DeepSeek (murah, ~Rp2/analisa)</b> → platform.deepseek.com/api_keys → key diawali <code>sk-</code> <br/>
+              <span style={{ fontSize: 11.5 }}>Catatan: Groq & DeepSeek nggak bisa browsing berita live, tapi harga emas tetap akurat (disuntik otomatis dari data live app).</span>
             </p>
             <div style={{ display: "flex", gap: 8 }}>
-              <input type="password" placeholder="sk-ant-…, AQ.…, atau sk-…" value={keyInput} onChange={(e) => setKeyInput(e.target.value)} style={{ ...inputStyle, flex: 1 }} />
+              <input type="password" placeholder="gsk_…, sk-ant-…, AQ.…, atau sk-…" value={keyInput} onChange={(e) => setKeyInput(e.target.value)} style={{ ...inputStyle, flex: 1 }} />
               <button onClick={saveKey} style={{ padding: "0 16px", borderRadius: 10, border: "none", background: C.gold, color: "#1a1508", fontWeight: 700, fontFamily: "inherit" }}>Simpan</button>
             </div>
             <p style={{ fontSize: 11.5, color: C.muted, lineHeight: 1.5, margin: "8px 0 0" }}>
