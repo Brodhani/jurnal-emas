@@ -134,6 +134,8 @@ const getApiKey = () => localStorage.getItem(KEY_API) || "";
 const getGeminiKey = () => localStorage.getItem(KEY_GEMINI) || "";
 const getDeepseekKey = () => localStorage.getItem(KEY_DEEPSEEK) || "";
 const getGroqKey = () => localStorage.getItem(KEY_GROQ) || "";
+// Groq & DeepSeek nggak bisa browsing web — hanya Gemini & Claude yang boleh dipakai untuk fitur berita/kalender otomatis
+const hasNewsCapableKey = () => !!getApiKey() || !!getGeminiKey();
 
 async function callClaude(messages, useSearch) {
   const key = getApiKey();
@@ -334,7 +336,7 @@ function JurnalGoldPro() {
   // ── Berita AI (butuh API key) ──
   const fetchNews = async (force = false) => {
     if (newsLoading) return;
-    if (!getApiKey()) { await fetchQuote(); return; }
+    if (!hasNewsCapableKey()) { await fetchQuote(); return; }
     if (!force) {
       try {
         const c = await window.storage.get(KEY_NEWS);
@@ -357,7 +359,7 @@ Maksimal 4 baris NEWS dan 4 baris EVENT. Jika tidak ada event hari ini, tidak pe
     let ok = false;
     for (let attempt = 0; attempt < 2 && !ok; attempt++) {
       try {
-        const raw = await callClaude([{ role: "user", content: prompt }], true);
+        const raw = getGeminiKey() ? await callGemini(prompt, true) : await callClaude([{ role: "user", content: prompt }], true);
         const data = parseNewsLines(raw);
         if (!data) throw new Error("parse kosong");
         const ts = Date.now();
@@ -377,7 +379,7 @@ Maksimal 4 baris NEWS dan 4 baris EVENT. Jika tidak ada event hari ini, tidak pe
     fetchQuote();
     fetchNews(false);
     const qI = setInterval(fetchQuote, 60000);
-    const nI = setInterval(() => { if (getApiKey()) fetchNews(true); }, NEWS_TTL);
+    const nI = setInterval(() => { if (hasNewsCapableKey()) fetchNews(true); }, NEWS_TTL);
     const tI = setInterval(() => tick((x) => x + 1), 30000);
     return () => { clearInterval(qI); clearInterval(nI); clearInterval(tI); };
   }, []);
@@ -549,7 +551,7 @@ Maksimal 4 baris NEWS dan 4 baris EVENT. Jika tidak ada event hari ini, tidak pe
       )}
 
       <main style={{ padding: "0 18px" }}>
-        {tab === "dashboard" && <TabDashboard stats={stats} settings={settings} news={news} newsTs={newsTs} newsLoading={newsLoading} newsError={newsError} onRefresh={() => fetchNews(true)} todos={todos} trades={trades} goTab={setTab} lossLimitHit={lossLimitHit} targetHit={targetHit} hasKey={hasKey} />}
+        {tab === "dashboard" && <TabDashboard stats={stats} settings={settings} news={news} newsTs={newsTs} newsLoading={newsLoading} newsError={newsError} onRefresh={() => fetchNews(true)} todos={todos} trades={trades} goTab={setTab} lossLimitHit={lossLimitHit} targetHit={targetHit} hasKey={hasKey} newsCapable={hasNewsCapableKey()} />}
         {tab === "catat" && <TabCatat trades={trades} persistTrades={persistTrades} showToast={showToast} inputStyle={inputStyle} settings={settings} lossLimitHit={lossLimitHit} targetHit={targetHit} todayPnl={stats.todayPnl} />}
         {tab === "jurnal" && <TabJurnal trades={trades} persistTrades={persistTrades} loaded={loaded} exportCsv={exportCsv} showToast={showToast} setViewImg={setViewImg} stats={stats} />}
         {tab === "keuangan" && <TabKeuangan finance={finance} persistFinance={persistFinance} inputStyle={inputStyle} showToast={showToast} kurs={kurs} persistKurs={persistKurs} kursFromNews={news && news.kurs} />}
@@ -617,7 +619,7 @@ function TopBar({ activeAccount, onAccounts, news }) {
 }
 
 // ═══ Tab: Dashboard ══════════════════════════════════════════
-function TabDashboard({ stats, settings, news, newsTs, newsLoading, newsError, onRefresh, todos, trades, goTab, lossLimitHit, targetHit, hasKey }) {
+function TabDashboard({ stats, settings, news, newsTs, newsLoading, newsError, onRefresh, todos, trades, goTab, lossLimitHit, targetHit, hasKey, newsCapable }) {
   const hasTarget = settings.dailyTarget > 0;
   const hasLimit = settings.dailyLossLimit > 0;
   const progressPct = hasTarget && stats.todayPnl > 0 ? Math.min(100, (stats.todayPnl / settings.dailyTarget) * 100)
@@ -712,13 +714,19 @@ function TabDashboard({ stats, settings, news, newsTs, newsLoading, newsError, o
               Harga & kurs live sudah aktif ✓. Untuk berita AI, bias harian, kalender news + pengingat otomatis, isi <b style={{ color: C.gold }}>API key</b> di tab Alat.
             </div>
           </div>
+        ) : !newsCapable ? (
+          <div style={{ padding: "14px" }}>
+            <div style={{ fontSize: 13, color: C.muted, lineHeight: 1.55 }}>
+              Harga & kurs live sudah aktif ✓. Berita/bias/kalender otomatis butuh AI yang bisa browsing web (<b style={{ color: C.gold }}>Google Gemini</b> atau <b style={{ color: C.blue }}>Anthropic Claude</b>) — key Groq/DeepSeek kamu nggak bisa dipakai untuk ini karena tidak akses internet. Fitur <b>Analisa Market</b> & <b>AI Coach</b> di tab Alat tetap jalan penuh dengan key kamu.
+            </div>
+          </div>
         ) : newsError ? (
           <div style={{ padding: "14px" }}><div style={{ fontSize: 13, color: C.loss }}>{newsError}</div></div>
         ) : (
           <div style={{ padding: "14px", fontSize: 13, color: C.muted }}>⏳ Memuat berita gold…</div>
         )}
         <div style={{ padding: "8px 14px", fontSize: 10.5, color: C.muted, fontFamily: "'JetBrains Mono', monospace", background: C.panel2 }}>
-          Harga auto tiap 1 mnt{hasKey ? ` · berita AI tiap 15 mnt${umur !== null ? ` (update ${umur < 1 ? "baru saja" : umur + " mnt lalu"})` : ""}` : ""}
+          Harga auto tiap 1 mnt{newsCapable ? ` · berita AI tiap 15 mnt${umur !== null ? ` (update ${umur < 1 ? "baru saja" : umur + " mnt lalu"})` : ""}` : ""}
         </div>
       </Card>
 
