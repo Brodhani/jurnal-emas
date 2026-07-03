@@ -54,6 +54,7 @@ const KEY_FIN = "xau-finance-v1";
 const KEY_TODO = "xau-todo-v1";
 const KEY_KURS = "xau-kurs-manual";
 const KEY_API = "xau-apikey";
+const KEY_GEMINI = "xau-gemini-key";
 const NEWS_TTL = 15 * 60 * 1000;
 const tradesKey = (a) => `xau-trades:${a}`;
 const settingsKey = (a) => `xau-settings:${a}`;
@@ -128,6 +129,7 @@ function compressImage(file) {
 }
 
 const getApiKey = () => localStorage.getItem(KEY_API) || "";
+const getGeminiKey = () => localStorage.getItem(KEY_GEMINI) || "";
 
 async function callClaude(messages, useSearch) {
   const key = getApiKey();
@@ -147,6 +149,27 @@ async function callClaude(messages, useSearch) {
   const data = await res.json();
   if (data.error) throw new Error(data.error.message || "API error");
   return data.content.map((i) => (i.type === "text" ? i.text : "")).filter(Boolean).join("\n");
+
+// Gemini API untuk fitur AI gratis
+async function callGemini(prompt) {
+  const key = getGeminiKey();
+  if (!key) throw new Error("NO_KEY");
+  const res = await fetch("https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=" + key, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({
+      contents: [{ parts: [{ text: prompt }] }],
+      generationConfig: { maxOutputTokens: 1000, temperature: 0.7 },
+    }),
+  });
+  const data = await res.json();
+  if (data.error) throw new Error(data.error.message || "Gemini API error");
+  const candidates = data.candidates || [];
+  if (candidates.length === 0) throw new Error("No response from Gemini");
+  const content = candidates[0].content || {};
+  const parts = content.parts || [];
+  return parts.map((p) => p.text || "").filter(Boolean).join("\n");
+}
 }
 
 // Harga gold live gratis (tanpa API key)
@@ -1203,14 +1226,22 @@ function TabAlat({ inputStyle, settings, persistSettings, showToast, todos, pers
 
   const saveKey = () => {
     const k = keyInput.trim();
-    if (!k.startsWith("sk-ant-")) { showToast("Format API key tidak valid (harus sk-ant-…)"); return; }
-    localStorage.setItem(KEY_API, k);
+    if (k.startsWith("sk-ant-")) {
+      localStorage.setItem(KEY_API, k);
+      showToast("✅ API key Anthropic tersimpan!");
+    } else if (k.startsWith("AIza")) {
+      localStorage.setItem(KEY_GEMINI, k);
+      showToast("✅ API key Google Gemini tersimpan (GRATIS!)");
+    } else {
+      showToast("❌ Format tidak valid (sk-ant-… atau AIza…)");
+      return;
+    }
     setHasKey(true); setKeyInput("");
-    showToast("API key tersimpan — fitur AI aktif!");
     onKeySaved();
   };
   const removeKey = () => {
     localStorage.removeItem(KEY_API);
+    localStorage.removeItem(KEY_GEMINI);
     setHasKey(false);
     showToast("API key dihapus");
   };
@@ -1224,12 +1255,10 @@ function TabAlat({ inputStyle, settings, persistSettings, showToast, todos, pers
   const requireKey = () => { setAiError("Isi API key dulu di kartu 'Koneksi AI' di atas untuk pakai fitur ini."); };
 
   const analyzeMarket = async () => {
-    if (!getApiKey()) { requireKey(); return; }
+    if (!getApiKey() && !getGeminiKey()) { requireKey(); return; }
     setAiLoading("market"); setAiError(null); setAiResult(null);
     try {
-      const text = await callClaude([{
-        role: "user",
-        content: `Cari harga XAUUSD terkini dan berita penggeraknya. Buat analisa trading Bahasa Indonesia santai:
+      const prompt = `Cari harga XAUUSD terkini dan berita penggeraknya. Buat analisa trading Bahasa Indonesia santai:
 
 📊 KONDISI MARKET (2-3 kalimat)
 🎯 LEVEL KUNCI (resistance & support, 2-3 level masing-masing)
@@ -1237,15 +1266,20 @@ function TabAlat({ inputStyle, settings, persistSettings, showToast, todos, pers
 📈 RENCANA INTRADAY H1-H4 (skenario bullish & bearish: trigger + target)
 ⚠️ RISIKO HARI INI (event & jam rawan WIB)
 
-Maksimal 300 kata, actionable.`,
-      }], true);
+Maksimal 300 kata, actionable.`;
+      let text;
+      if (getGeminiKey()) {
+        text = await callGemini(prompt);
+      } else {
+        text = await callClaude([{ role: "user", content: prompt }], true);
+      }
       setAiResult({ title: "Analisa Market — Scalping & Intraday", text });
-    } catch (e) { setAiError(e.message === "NO_KEY" ? "Isi API key dulu di kartu 'Koneksi AI'." : "Gagal mengambil analisa — cek API key/koneksi lalu coba lagi."); }
+    } catch (e) { setAiError(e.message === "NO_KEY" ? "Isi API key dulu di kartu 'Koneksi AI'." : "Gagal: " + e.message); }
     setAiLoading(null);
   };
 
   const coachReview = async () => {
-    if (!getApiKey()) { requireKey(); return; }
+    if (!getApiKey() && !getGeminiKey()) { requireKey(); return; }
     if (trades.length < 3) { setAiError("Minimal 3 trade dulu biar review-nya berarti."); return; }
     setAiLoading("coach"); setAiError(null); setAiResult(null);
     const summary = {
@@ -1256,19 +1290,22 @@ Maksimal 300 kata, actionable.`,
       tradeTerakhir: trades.slice(0, 10).map((t) => ({ tanggal: t.date, arah: t.direction, tf: t.timeframe, sesi: t.session, setup: t.setup, pnl: t.pnl.toFixed(2) })),
     };
     try {
-      const text = await callClaude([{
-        role: "user",
-        content: `Kamu trading coach XAUUSD berpengalaman. Data jurnal saya: ${JSON.stringify(summary)}
+      const prompt = `Kamu trading coach XAUUSD berpengalaman. Data jurnal saya: ${JSON.stringify(summary)}
 
 Review Bahasa Indonesia santai tapi jujur:
 💪 YANG SUDAH BAGUS (2-3 poin dari data)
 🔍 POLA YANG PERLU DIWASPADAI (2-3 poin)
 🎯 3 ACTION ITEM MINGGU INI (konkret)
 
-Maksimal 250 kata, pakai angka dari data saya.`,
-      }], false);
+Maksimal 250 kata, pakai angka dari data saya.`;
+      let text;
+      if (getGeminiKey()) {
+        text = await callGemini(prompt);
+      } else {
+        text = await callClaude([{ role: "user", content: prompt }], false);
+      }
       setAiResult({ title: "Review dari AI Coach", text });
-    } catch (e) { setAiError(e.message === "NO_KEY" ? "Isi API key dulu di kartu 'Koneksi AI'." : "Gagal mengambil review — coba lagi."); }
+    } catch (e) { setAiError("Gagal: " + e.message); }
     setAiLoading(null);
   };
 
@@ -1287,14 +1324,16 @@ Maksimal 250 kata, pakai angka dari data saya.`,
         ) : (
           <React.Fragment>
             <p style={{ fontSize: 13, color: C.muted, lineHeight: 1.6, margin: "0 0 10px" }}>
-              Fitur AI (berita, bias, kalender + pengingat, analisa, coach) butuh <b style={{ color: C.gold }}>API key Anthropic</b> milikmu. Buat di <b>console.anthropic.com</b> → API Keys. Key hanya tersimpan di HP kamu (localStorage), tidak dikirim ke mana-mana selain langsung ke Anthropic. Jangan isi di HP orang lain.
+              Pilih salah satu API key untuk fitur AI (berita, bias, analisa, coach): <br/>
+              <b style={{ color: C.gold }}>1. Google Gemini (GRATIS) </b> → console.cloud.google.com → Create API key (recommended untuk mulai) <br/>
+              <b style={{ color: C.blue }}>2. Anthropic Claude</b> → console.anthropic.com → API Keys (lebih akurat tapi bayar)
             </p>
             <div style={{ display: "flex", gap: 8 }}>
-              <input type="password" placeholder="sk-ant-…" value={keyInput} onChange={(e) => setKeyInput(e.target.value)} style={{ ...inputStyle, flex: 1 }} />
+              <input type="password" placeholder="sk-ant-… atau AIza…" value={keyInput} onChange={(e) => setKeyInput(e.target.value)} style={{ ...inputStyle, flex: 1 }} />
               <button onClick={saveKey} style={{ padding: "0 16px", borderRadius: 10, border: "none", background: C.gold, color: "#1a1508", fontWeight: 700, fontFamily: "inherit" }}>Simpan</button>
             </div>
             <p style={{ fontSize: 11.5, color: C.muted, lineHeight: 1.5, margin: "8px 0 0" }}>
-              Tanpa key: harga gold & kurs tetap live gratis, jurnal & semua alat tetap jalan penuh.
+              Key tersimpan cuma di HP kamu (localStorage), aman. Tanpa key: harga gold, kurs & semua alat tetap jalan penuh.
             </p>
           </React.Fragment>
         )}
