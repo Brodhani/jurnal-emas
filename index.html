@@ -908,6 +908,7 @@ function TabCatat({ trades, persistTrades, showToast, inputStyle, settings, loss
   const [session, setSession] = useState(activeSessionWIB()[0] || "London");
   const [timeframe, setTimeframe] = useState("scalp");
   const [simplePnl, setSimplePnl] = useState("");
+  const [pnlSign, setPnlSign] = useState("profit"); // keyboard iOS nggak punya tombol minus, jadi tanda diatur toggle ini
   const [checks, setChecks] = useState({});
   const [imgData, setImgData] = useState(null);
   const [imgBusy, setImgBusy] = useState(false);
@@ -950,10 +951,11 @@ function TabCatat({ trades, persistTrades, showToast, inputStyle, settings, loss
       t = { id: Date.now().toString(36), type: "layer", date, direction, layers: calc.valid, totalLot: calc.totalLot, avgEntry: calc.avgEntry, exit: parseFloat(exitPrice), pnl: calc.pnl, note: note.trim(), setup, session, timeframe, hasImg: !!imgData };
       setLayers([{ lot: "", price: "" }]); setExitPrice("");
     } else {
-      const v = parseFloat(simplePnl);
-      if (isNaN(v) || v === 0) { showToast("Masukkan nominal profit (+) atau loss (−)"); return; }
+      const mag = Math.abs(parseFloat(simplePnl));
+      if (isNaN(mag) || mag === 0) { showToast("Masukkan nominal profit/loss"); return; }
+      const v = pnlSign === "loss" ? -mag : mag;
       t = { id: Date.now().toString(36), type: "simple", date, pnl: v, note: note.trim(), setup, session, timeframe, hasImg: !!imgData };
-      setSimplePnl("");
+      setSimplePnl(""); setPnlSign("profit");
     }
     await persistTrades([t, ...trades]);
     if (imgData) { try { await window.storage.set(imgKey(t.id), imgData); } catch (e) { showToast("Trade tersimpan, gambar gagal (memori penuh)"); } }
@@ -1061,10 +1063,15 @@ function TabCatat({ trades, persistTrades, showToast, inputStyle, settings, loss
       ) : (
         <React.Fragment>
           <p style={{ fontSize: 13.5, color: C.muted, lineHeight: 1.55, marginTop: 0 }}>
-            Cukup catat hasil bersihnya. Angka minus untuk loss, contoh <Mono size={13} color={C.loss}>-125.50</Mono>.
+            Cukup catat hasil bersihnya. Pilih Profit atau Loss, lalu isi nominalnya (nggak perlu tanda minus — keyboard iPhone emang nggak ada tombolnya).
           </p>
+          <div style={{ display: "flex", gap: 8, marginBottom: 10 }}>
+            {[{ k: "profit", label: "PROFIT", col: C.profit }, { k: "loss", label: "LOSS", col: C.loss }].map((d) => (
+              <button key={d.k} onClick={() => setPnlSign(d.k)} style={{ flex: 1, padding: "11px 0", borderRadius: 10, fontFamily: "'JetBrains Mono', monospace", fontWeight: 600, fontSize: 14, letterSpacing: 2, border: `1.5px solid ${pnlSign === d.k ? d.col : C.line}`, background: pnlSign === d.k ? `${d.col}18` : "transparent", color: pnlSign === d.k ? d.col : C.muted }}>{d.label}</button>
+            ))}
+          </div>
           <div style={{ display: "flex", gap: 8, marginBottom: 12 }}>
-            <input type="number" inputMode="decimal" placeholder="Profit / loss ($)" value={simplePnl} onChange={(e) => setSimplePnl(e.target.value)} style={{ ...inputStyle, flex: 1.4, fontSize: 18 }} />
+            <input type="number" inputMode="decimal" placeholder="Nominal ($)" value={simplePnl} onChange={(e) => setSimplePnl(e.target.value)} style={{ ...inputStyle, flex: 1.4, fontSize: 18, color: pnlSign === "loss" ? C.loss : C.profit }} />
             <input type="date" value={date} onChange={(e) => setDate(e.target.value)} style={{ ...inputStyle, flex: 1 }} />
           </div>
         </React.Fragment>
